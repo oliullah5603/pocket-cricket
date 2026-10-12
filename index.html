@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#123b2a">
+  <meta name="description" content="A little cricket, a lot of fun. Time your shots, hit boundaries, and play a friend online or offline.">
+  <title>Pocket Cricket — One more over?</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="styles.css">
+  <script defer src="engine.js"></script>
+  <script defer src="peerjs.min.js"></script>
+  <script defer src="online.js"></script>
+  <script defer src="pitch.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <a class="brand" href="./" aria-label="Pocket Cricket home">
+        <span class="brand-mark"><svg width="28" height="28" viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="m10 24 11-15 5 4-12 14z" fill="currentColor"/><path d="m23 10 4-6" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><circle cx="7" cy="8" r="4" fill="#f48c54"/><path d="m5 5 4 6" stroke="white"/></svg></span>
+        <span class="brand-copy"><strong>pocket cricket<span style="color:#78a23c">.</span></strong><small>THE EVERYDAY CRICKET CLUB</small></span>
+      </a>
+      <div class="header-actions"><span class="status-pill" id="connectionBadge">● Offline ready</span><button class="icon-button" id="soundButton" aria-label="Turn sound on" aria-pressed="false" title="Sound on/off">♪</button><button class="icon-button" id="helpButton" aria-label="How to play" title="How to play">?</button></div>
+    </header>
+    <main>
+      <section class="intro"><p class="eyebrow">A LITTLE CRICKET. A LOT OF FUN.</p><h1>Your next break?<br><span>Make it a six.</span></h1><p>Step up to the crease. Time your swing. Just one more over.</p></section>
+      <div class="workspace">
+        <section class="card game-panel" aria-label="Cricket match">
+          <div class="game-top"><span class="pill"><i class="live-dot"></i><span id="matchMode">QUICK MATCH</span></span><span id="inningsLabel">2 overs · 3 wickets</span></div>
+          <div class="scoreboard" aria-live="polite" aria-atomic="true">
+            <div class="team-score active" id="team0"><div class="team-label" id="name0">You <span>BAT</span></div><div class="score"><strong id="score0">0<span>/0</span></strong></div><div class="overs" id="overs0">0.0 overs</div></div>
+            <div class="versus">vs</div>
+            <div class="team-score" id="team1"><div class="team-label" id="name1">Computer</div><div class="score"><strong id="score1">0<span>/0</span></strong></div><div class="overs" id="overs1">0.0 overs</div></div>
+          </div>
+          <div class="target-line" id="targetLine">The pitch is yours. Start a match to play.</div>
+          <div class="stadium" id="stadium">
+            <span class="stadium-tag" id="stadiumTag">THE POCKET OVAL</span>
+            <span class="outcome-badge" id="outcomeBadge" hidden></span>
+            <canvas id="pitchCanvas" width="720" height="380" aria-label="Animated cricket field. Use the Swing button or Space to hit the incoming ball.">Your browser needs canvas support to play cricket.</canvas>
+            <div class="stadium-caption"><span id="fieldCaption">Good vibes. Great cover drives.</span><div class="ball-trail" id="ballTrail" aria-label="Recent balls"></div></div>
+          </div>
+          <div class="play-area">
+            <div class="play-heading"><div><h2 id="playTitle">Ready for the first ball?</h2><p id="playDescription">Start a match, then swing as the ball reaches the bat.</p></div><span class="role-pill" id="rolePill">YOUR CREASE</span></div>
+            <div class="timing-meter" aria-label="Ball timing"><div class="timing-track"><span class="timing-sweet"></span><i class="timing-cursor" id="timingCursor"></i></div><div class="aim-label" style="display:flex;justify-content:space-between"><span>Ball on its way</span><span>HIT ZONE</span></div></div>
+            <div class="batting-controls" id="battingControls"><button class="aim-button" id="aimLeft" aria-label="Aim shot left" disabled>↖ <small>LEFT</small></button><button class="swing-button" id="swingButton" disabled><strong>SWING THE BAT</strong><small>SPACE / TAP</small></button><button class="aim-button" id="aimRight" aria-label="Aim shot right" disabled>↗ <small>RIGHT</small></button></div>
+            <div class="bowling-controls" id="bowlingControls" hidden><button class="delivery-button" data-delivery="pace"><strong>⚡ Pace</strong><small>Fast &amp; straight</small></button><button class="delivery-button" data-delivery="spin"><strong>↪ Spin</strong><small>Slow &amp; turning</small></button><button class="delivery-button" data-delivery="yorker"><strong>↓ Yorker</strong><small>Quick at the toes</small></button></div>
+            <p class="hint" id="controlHint">← → to aim · Space to swing · Timing is everything.</p>
+            <div class="match-actions"><button class="button secondary" id="pauseButton" hidden>Pause</button><button class="button primary" id="nextButton" hidden>Next ball →</button><button class="button ghost" id="newMatchButton" hidden>End match</button></div>
+          </div>
+          <div class="session-stats"><div class="stat"><span>YOUR BEST</span><strong id="bestStat">0 <small>runs</small></strong></div><div class="stat"><span>MATCHES PLAYED</span><strong id="gamesStat">0</strong></div><div class="stat"><span>YOUR WINS</span><strong id="winsStat">0</strong></div></div>
+        </section>
+        <aside class="side-panel">
+          <section class="card setup-card"><div class="card-heading"><h2>Let’s play.</h2><span>YOUR MATCH, YOUR WAY</span></div>
+            <div class="mode-switch" aria-label="Game mode"><button class="mode-button selected" data-mode="cpu" aria-pressed="true">⌨<strong>Solo</strong><small>vs computer</small></button><button class="mode-button" data-mode="local" aria-pressed="false">♧<strong>2 players</strong><small>one device</small></button><button class="mode-button" data-mode="online" aria-pressed="false">◎<strong>Online</strong><small>with a friend</small></button></div>
+            <label class="field-label" for="playerName">Your team name</label><input class="input" id="playerName" placeholder="You" maxlength="24" autocomplete="nickname">
+            <div id="friendField" hidden><label class="field-label" for="friendName">Friend’s team name</label><input class="input" id="friendName" placeholder="Player 2" maxlength="24"></div>
+            <div class="two-fields"><div><label class="field-label" for="oversSelect">Match length</label><select class="input" id="oversSelect"><option value="1">1 over · quick</option><option value="2" selected>2 overs · classic</option><option value="5">5 overs · settle in</option></select></div><div><label class="field-label" for="batFirstSelect">First innings</label><select class="input" id="batFirstSelect"><option value="0">You bat first</option><option value="1">You bowl first</option></select></div></div>
+            <p class="hint" id="modeHint">Two innings. Three wickets. Endless “one more match”.</p>
+            <button class="button primary" id="startButton" style="width:100%">Start a match <span>↗</span></button>
+            <button class="button secondary" id="resumeButton" style="width:100%;margin-top:10px" hidden>Resume saved match</button>
+            <div class="online-fields" id="onlineFields" hidden><div class="join-row"><input class="input" id="roomInput" placeholder="Friend’s room code" maxlength="8" aria-label="Room code" autocapitalize="characters" spellcheck="false"><button class="button secondary" id="joinButton">Join</button></div><p class="hint">Share the room code. Keep both game tabs open.</p></div>
+            <div class="room-card" id="roomCard" hidden><span class="field-label">YOUR ROOM CODE</span><div class="join-row"><strong class="room-code" id="roomCode">—</strong><button class="copy-button" id="copyButton">Copy invite</button></div><p class="room-players" id="roomPlayers">Waiting for a friend…</p><button class="button secondary" id="leaveButton">Leave room</button></div>
+            <p class="banner" id="onlineStatus" role="status" hidden></p>
+          </section>
+          <section class="card rules-card"><div class="card-heading"><h2>Easy to pick up.</h2><span>HOW TO PLAY</span></div><ol><li><span class="rule-icon">01</span><div><strong>Watch the ball</strong><p>Wait until it reaches the batter. The timing marker helps you.</p></div></li><li><span class="rule-icon">02</span><div><strong>Find the sweet spot</strong><p>Space or tap to swing. A perfect shot flies for six.</p></div></li><li><span class="rule-icon">03</span><div><strong>Chase the target</strong><p>Aim away from fielders. Score more than your opponent to win.</p></div></li></ol></section>
+          <section class="card history-card"><div class="card-heading"><h2>Ball by ball.</h2><span id="historyCount">0 DELIVERIES</span></div><div class="history-list" id="historyList"><p class="hint">A fresh pitch. A story waiting to happen.</p></div></section>
+        </aside>
+      </div>
+    </main>
+    <footer class="footer"><span>Made for the love of the game.</span><span>No downloads. No sign-up. Just cricket. 🏏</span></footer>
+  </div>
+  <div class="modal-backdrop" id="modal" hidden><section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalTitle" tabindex="-1"><span class="modal-icon" id="modalIcon">🏏</span><h2 id="modalTitle"></h2><p id="modalDescription"></p><div class="modal-actions"><button class="button primary" id="modalPrimary">Let’s play</button><button class="button secondary" id="modalSecondary" hidden>Cancel</button></div></section></div>
+  <div class="toast" id="toast" role="status" hidden></div>
+</body>
+</html>
+
