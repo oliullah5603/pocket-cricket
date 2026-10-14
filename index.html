@@ -8,16 +8,16 @@
   <title>Pocket Cricket</title>
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="stylesheet" href="styles.css">
-  <script defer src="engine.js"></script>
+  <link rel="stylesheet" href="styles.css?v=5">
+  <script defer src="engine.js?v=5"></script>
   <script defer src="peerjs.min.js"></script>
-  <script defer src="online.js"></script>
-  <script defer src="pitch.js"></script>
-  <script defer src="app.js"></script>
+  <script defer src="online.js?v=5"></script>
+  <script defer src="pitch.js?v=5"></script>
+  <script defer src="app.js?v=5"></script>
 </head>
 <body>
   <main class="game-shell" id="stadium" aria-label="Pocket Cricket game">
-    <canvas id="pitchCanvas" width="720" height="380" aria-label="Cricket field. Move your pointer to aim. Click to hit, or hold and release for a power boost. Space also swings the bat.">Your browser needs canvas support to play cricket.</canvas>
+    <canvas id="pitchCanvas" width="720" height="380" aria-label="Cricket field. Batting: move to aim and click to hit. Bowling: aim the landing target, drag down to build power, then release to bowl. Space and the on-screen Hit or Bowl button also play the ball.">Your browser needs canvas support to play cricket.</canvas>
     <div class="screen-vignette" aria-hidden="true"></div>
     <header class="top-hud">
       <div class="brand"><span class="brand-slash" aria-hidden="true"></span><div><strong>POCKET<br>CRICKET</strong><small>THE POCKET OVAL</small></div></div>
@@ -50,7 +50,7 @@
         <div class="play-heading"><div><h1 id="playTitle">Ready for the first ball?</h1><p id="playDescription">Open the menu and start a match.</p></div><span class="role-pill" id="rolePill">YOUR CREASE</span></div>
         <div class="play-row">
           <div class="timing-meter" aria-label="Ball timing"><div class="timing-track"><span class="timing-sweet"></span><i class="timing-cursor" id="timingCursor"></i></div><div class="timing-labels"><span>BALL APPROACHING</span><span>HIT ZONE</span></div></div>
-          <div class="control-row"><div class="batting-controls" id="battingControls"><button class="aim-button" id="aimLeft" aria-label="Aim left" disabled>↖</button><button class="swing-button" id="swingButton" disabled><strong>HIT</strong><small>SPACE</small></button><button class="aim-button" id="aimRight" aria-label="Aim right" disabled>↗</button></div><div class="bowling-controls" id="bowlingControls" hidden><button class="delivery-button" data-delivery="pace"><strong>PACE</strong><small>Fast</small></button><button class="delivery-button" data-delivery="spin"><strong>SPIN</strong><small>Turning</small></button><button class="delivery-button" data-delivery="yorker"><strong>YORKER</strong><small>Low</small></button></div></div>
+          <div class="control-row"><div class="batting-controls" id="battingControls"><button class="aim-button" id="aimLeft" aria-label="Aim left" disabled>↖</button><button class="swing-button" id="swingButton" disabled><strong>HIT</strong><small>SPACE</small></button><button class="aim-button" id="aimRight" aria-label="Aim right" disabled>↗</button></div><div class="bowling-controls" id="bowlingControls" aria-label="Choose a delivery, then bowl" hidden><button class="delivery-button selected" data-delivery="pace" aria-label="Select pace delivery" aria-pressed="true"><strong>PACE</strong><small>Fast</small></button><button class="delivery-button" data-delivery="spin" aria-label="Select spin delivery" aria-pressed="false"><strong>SPIN</strong><small>Turning</small></button><button class="delivery-button" data-delivery="yorker" aria-label="Select yorker delivery" aria-pressed="false"><strong>YORKER</strong><small>Low</small></button><button class="bowl-button" id="bowlButton" aria-label="Bowl the selected delivery" disabled><strong>BOWL</strong><small>SPACE</small></button></div></div>
         </div>
         <p class="control-hint" id="controlHint">Mouse: aim &amp; power · Click: hit · Space: swing</p>
       </div>
@@ -75,8 +75,8 @@
           </div>
         </div>
         <div class="controls-panel" id="menuControlsPanel" role="tabpanel" aria-labelledby="menuTabControls" hidden>
-          <div class="controls-intro"><span class="dialog-kicker">AT THE CREASE</span><h3>Every shot is yours.</h3><p>Aim for a gap, choose your power and swing as the ball arrives.</p></div>
-          <div class="control-guides"><div><span class="key-cap">MOUSE</span><h4>Aim &amp; power</h4><p>Move around the batter to aim in any direction. Move farther away to hit harder.</p></div><div><span class="key-cap">CLICK / RELEASE</span><h4>Time your swing</h4><p>Click when the marker reaches the hit zone. Hold and release for a power boost.</p></div><div><span class="key-cap">SPACE / TOUCH</span><h4>Play your way</h4><p>Hold and release Space to boost your shot. On a phone, aim with your finger and use Hit.</p></div></div>
+          <div class="controls-intro"><span class="dialog-kicker">BAT &amp; BALL</span><h3>Control both sides.</h3><p>Pick your shot at the crease. Set your delivery on the pitch.</p></div>
+          <div class="control-guides"><div><span class="key-cap">AIM YOUR SHOT</span><h4>Batting: aim &amp; power</h4><p>Move around the batter to aim anywhere. Move farther away for more power. Touch works too.</p></div><div><span class="key-cap">CLICK / SPACE</span><h4>Time your swing</h4><p>Click at the green hit zone. Hold and release for a boost, or use Space or Hit.</p></div><div><span class="key-cap">DRAG / RELEASE</span><h4>Bowling: target &amp; power</h4><p>Select a delivery. Aim its landing target, drag down for power, then release. Space or Bowl also bowls.</p></div></div>
           <div class="controls-footer"><p><kbd>←</kbd><kbd>→</kbd> also aim your shot</p><button class="button secondary" id="helpButton">Rules &amp; timing</button></div>
         </div>
       </section>

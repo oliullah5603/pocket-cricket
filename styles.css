@@ -49,4 +49,22 @@
   .controls-intro>.dialog-kicker{display:none}.controls-intro h3{font-size:19px;margin:0 0 5px}.controls-intro p{font-size:11px}.control-guides{gap:11px;margin:14px 0}.control-guides h4{font-size:13px}.control-guides p{font-size:11px;line-height:1.35}.key-cap{font-size:9px;padding:7px 4px}.controls-footer{padding-top:10px}.controls-footer .button{min-height:34px;font-size:11px}
   .scorecard-dialog .session-stats{margin:12px 0;padding:10px 0}.scorecard-dialog .history-list{max-height:none;overflow:hidden}.scorecard-dialog .delivery{padding:7px 0}.scorecard-dialog .delivery-text strong{font-size:11px}.scorecard-dialog .delivery-text small{font-size:10px}
 }
+/* Delivery buttons select the ball; the field gesture or Bowl sends it. */
+.control-row:has(#bowlingControls:not([hidden])){flex-basis:238px}
+.bowling-controls{grid-template-columns:repeat(3,minmax(0,1fr)) 67px;gap:4px}
+.delivery-button{cursor:pointer}
+.delivery-button.selected,.delivery-button[aria-pressed="true"]{background:#36574b;border-color:#d5ef789c;color:#eff7d6;box-shadow:inset 0 -2px 0 #bcd978}
+.delivery-button.selected strong,.delivery-button[aria-pressed="true"] strong{color:var(--lime)}
+.delivery-button.selected small,.delivery-button[aria-pressed="true"] small{color:#c3d7b0}
+.bowl-button{display:flex;align-items:center;justify-content:center;flex-direction:column;gap:2px;min-width:0;height:34px;border:1px solid var(--lime);border-radius:5px;background:var(--lime);color:#1a3427;box-shadow:0 2px 0 #839948}
+.bowl-button strong{font-size:13px;letter-spacing:.3px}.bowl-button small{font-size:8px;letter-spacing:.2px;font-weight:700;color:#536b35}
+.bowl-button:hover:not(:disabled){background:#e4ffa2}.bowl-button:active:not(:disabled){box-shadow:none}
+@media(max-width:1000px){.control-row:has(#bowlingControls:not([hidden])){flex-basis:220px}}
+@media(max-width:690px){.control-row:has(#bowlingControls:not([hidden])){flex:none;width:100%}.bowling-controls{grid-template-columns:repeat(3,minmax(0,1fr)) 61px}.delivery-button{height:32px;min-height:32px;padding:4px 2px}.delivery-button small{display:none}.delivery-button strong{font-size:10px}.bowl-button{height:32px}.bowl-button strong{font-size:12px}.bowl-button small{font-size:7px}}
+@media(max-width:380px){.bowling-controls{grid-template-columns:repeat(3,minmax(0,1fr)) 55px}.delivery-button strong{font-size:9px}.bowl-button strong{font-size:11px}}
+.bowling-role .bottom-hud .timing-meter{display:none}
+.bowling-role .play-row .control-row{flex:1 1 auto;width:100%}
+.bowling-role .bowling-controls{width:100%;grid-template-columns:repeat(3,minmax(0,1fr)) minmax(67px,.9fr)}
+@media(max-width:690px){.bowling-role .bowling-controls{grid-template-columns:repeat(3,minmax(0,1fr)) 61px}}
+@media(max-width:380px){.bowling-role .bowling-controls{grid-template-columns:repeat(3,minmax(0,1fr)) 55px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}

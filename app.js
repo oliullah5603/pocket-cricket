@@ -19,6 +19,7 @@
   let busy = false, currentDelivery = null, recorded = false, rematchRequested = false, paused = false;
   let timers = [], modalAction = null, modalCancel = null, previousFocus = null, toastTimer;
   let sound = safeRead('pocket-cricket-sound', false), audioContext, spaceHeld = false;
+  let selectedBowlingType = 'pace', bowlingPending = false;
   const pauseReasons = new Set();
   let menuTab = 'match', returnToMenu = false;
   const pitch = new CricketPitch($('pitchCanvas'), {
@@ -26,7 +27,9 @@
     onFinish: () => finishBall(),
     onProgress: progress => { $('timingCursor').style.left = `${Math.min(100, Math.max(0, progress * 85))}%`; },
     onAim: updateShotReadout,
-    onCharge: info => { $('powerFill').style.width = `${Math.round(info.power * 100)}%`; $('powerValue').textContent = `${Math.round(info.power * 100)}%`; $('powerFill').classList.toggle('charging', info.charging); }
+    onBowlAim: updateBowlingReadout,
+    onBowl: aim => dispatchBowl(aim),
+    onCharge: info => { if (match && !amBatting()) return; $('powerFill').style.width = `${Math.round(info.power * 100)}%`; $('powerValue').textContent = `${Math.round(info.power * 100)}%`; $('powerFill').classList.toggle('charging', info.charging); }
   });
   const randomUint = () => { const a = new Uint32Array(1); crypto.getRandomValues(a); return a[0]; };
   const randomType = () => ['pace', 'spin', 'yorker'][randomUint() % 3];
@@ -36,7 +39,7 @@
   function pauseFor(reason, enabled) {
     enabled ? pauseReasons.add(reason) : pauseReasons.delete(reason);
     paused = mode !== 'online' && pauseReasons.size > 0;
-    if (paused) { spaceHeld = false; pitch.pause?.(); }
+    if (paused) { spaceHeld = false; pitch.setBowlingMode?.(false); pitch.pause?.(); }
     else pitch.resume?.();
   }
   function schedulePlay() { if (match?.phase === 'playing' && mode !== 'online' && amBatting() && !busy && !paused && !panelOpen()) later(startAutomaticBall, 800); }
@@ -67,12 +70,24 @@
   }
   function closePanels() { $('gameMenu').hidden = $('scorecard').hidden = $('modal').hidden = true; returnToMenu = false; pauseReasons.clear(); paused = false; spaceHeld = false; pitch.resume?.(); }
   function updateShotReadout(shot) {
+    if (match && !amBatting()) { updateBowlingReadout(busy ? currentDelivery : pitch.bowlingAim); return; }
     const angle = shot.angle ?? -Math.PI / 2;
     const power = shot.power ?? .7;
     $('powerFill').style.width = `${Math.round(power * 100)}%`;
     $('powerValue').textContent = `${Math.round(power * 100)}%`;
     $('shotName').textContent = shot.shot || Engine.shotName?.(angle, power) || 'Straight drive';
     $('shotAngle').textContent = `${Math.round(angle * 180 / Math.PI)}°`;
+  }
+  function updateBowlingReadout(aim = {}) {
+    if (!match || amBatting()) return;
+    aim ||= {};
+    const {line, length, speed} = Engine.bowlingOptions(aim);
+    const label = length < .3 ? 'Short' : length > .83 ? 'Full / yorker' : 'Good length';
+    $('powerFill').style.width = `${Math.round(speed * 100)}%`;
+    $('powerValue').textContent = `${Math.round(speed * 100)}%`;
+    $('powerFill').classList.remove('charging');
+    $('shotName').textContent = `${label} · ${selectedBowlingType.toUpperCase()}`;
+    $('shotAngle').textContent = line < -.2 ? 'LEG' : line > .2 ? 'OFF' : 'MIDDLE';
   }
   function toast(text) { clearTimeout(toastTimer); $('toast').textContent = text; $('toast').hidden = false; toastTimer = setTimeout(() => $('toast').hidden = true, 4200); }
   function tone(outcome) {
@@ -116,6 +131,7 @@
     if (!match) render();
   }
   function resetGame({leaveRoom = false} = {}) {
+    bowlingPending = false;
     clearTimers(); pitch.reset(); busy = false; currentDelivery = null; pendingMatch = null; match = null; recorded = false; rematchRequested = false; paused = false;
     $('outcomeBadge').hidden = true; $('timingCursor').style.left = '0%'; $('fieldCaption').textContent = 'Good vibes. Great cover drives.';
     if (leaveRoom) { room?.leave(); room = null; connected = false; $('roomCard').hidden = true; $('onlineStatus').hidden = true; }
@@ -142,21 +158,27 @@
     const score = view.scores[view.batter];
     $('targetLine').textContent = !match ? 'The pitch is yours. Start a match to play.' : view.phase === 'finished' ? Engine.resultText(view) : view.target ? `${view.players[view.batter]} need ${Math.max(0, view.target - score.runs)} runs from ${Math.max(0, view.overs * 6 - score.balls)} balls · Target ${view.target}` : `${view.players[view.batter]} are setting the target · ${view.wicketLimit - score.wickets} wickets left`;
     const batting = !match || amBatting();
-    $('shotPanelTitle').textContent = batting ? 'YOUR SHOT' : 'BATTER’S SHOT';
+    $('stadium').classList.toggle('bowling-role', !batting);
+    $('shotPanelTitle').textContent = batting ? 'YOUR SHOT' : 'YOUR DELIVERY';
     $('pauseButton').hidden = !match || mode === 'online' || view.phase !== 'playing';
     $('pauseButton').textContent = paused ? 'Resume play' : 'Pause';
     $('battingControls').hidden = !batting; $('bowlingControls').hidden = batting || !match || view.phase !== 'playing';
     $('swingButton').disabled = !match || !busy || !batting || paused || (mode === 'online' && !connected);
     $('aimLeft').disabled = $('aimRight').disabled = !match || !batting || paused || view.phase !== 'playing' || (mode === 'online' && !connected);
-    document.querySelectorAll('[data-delivery]').forEach(b => b.disabled = busy || paused || view.phase !== 'playing' || (mode === 'online' && !connected));
+    const canBowl = !!match && !batting && !busy && !bowlingPending && !paused && !panelOpen() && document.visibilityState !== 'hidden' && view.phase === 'playing' && (mode !== 'online' || connected);
+    document.querySelectorAll('[data-delivery]').forEach(b => { b.disabled = !canBowl; b.setAttribute('aria-pressed', String(b.dataset.delivery === selectedBowlingType)); });
+    $('bowlButton').disabled = !canBowl;
+    pitch.setBowlingMode?.(canBowl);
+    if (canBowl) $('outcomeBadge').hidden = true;
+    if (!batting) updateBowlingReadout(busy ? currentDelivery : pitch.bowlingAim);
     $('nextButton').hidden = !match || busy;
     $('newMatchButton').hidden = !match;
     $('newMatchButton').textContent = view.phase === 'finished' ? 'New match' : 'End match';
     $('rolePill').textContent = !match ? 'YOUR CREASE' : batting ? 'BATTING' : 'BOWLING';
-    $('playTitle').textContent = !match ? 'Welcome to the crease' : view.phase === 'finished' ? 'Match complete' : view.phase === 'innings-break' ? 'Innings break' : paused ? 'Match paused' : busy ? batting ? 'Watch the ball. Release your shot.' : 'Delivery in play' : batting ? mode === 'online' ? 'Waiting for the bowler' : 'Next delivery coming up' : 'Pick your delivery';
-    $('playDescription').textContent = !match ? 'Open the in-game menu to start a match.' : view.phase === 'finished' ? 'View the scorecard or play a rematch.' : view.phase === 'innings-break' ? `${view.players[1 - view.batter]} chase ${score.runs + 1}.` : paused ? 'Resume play when you are ready.' : busy ? batting ? 'Click when the ball reaches the bat. Aim away from fielders.' : 'The batter controls this shot.' : batting ? mode === 'online' ? 'Your friend chooses the next delivery.' : 'Automatic bowling — stay ready.' : 'Pace, spin or yorker.';
-    $('controlHint').textContent = batting ? 'Move to aim · Farther cursor = more power · Click to hit' : 'Choose a delivery to bowl';
-    $('inputHint').textContent = batting ? 'HOLD FOR EXTRA POWER · RELEASE TO STRIKE' : 'BOWL TO YOUR OPPONENT';
+    $('playTitle').textContent = !match ? 'Welcome to the crease' : view.phase === 'finished' ? 'Match complete' : view.phase === 'innings-break' ? 'Innings break' : paused ? 'Match paused' : busy ? batting ? 'Watch the ball. Release your shot.' : 'Delivery in play' : batting ? mode === 'online' ? 'Waiting for the bowler' : 'Next delivery coming up' : bowlingPending ? 'Sending your delivery…' : 'Aim on the pitch. Drag & release.';
+    $('playDescription').textContent = !match ? 'Open the in-game menu to start a match.' : view.phase === 'finished' ? 'View the scorecard or play a rematch.' : view.phase === 'innings-break' ? `${view.players[1 - view.batter]} chase ${score.runs + 1}.` : paused ? 'Resume play when you are ready.' : busy ? batting ? 'Click when the ball reaches the bat. Aim away from fielders.' : 'The batter controls this shot.' : batting ? mode === 'online' ? 'Your friend chooses the next delivery.' : 'Automatic bowling — stay ready.' : 'Place the target. Pull down for more pace. Release to bowl.';
+    $('controlHint').textContent = batting ? 'Move to aim · Farther cursor = more power · Click to hit' : 'Pitch: aim · Drag down: power · Release: bowl · Space: bowl';
+    $('inputHint').textContent = batting ? 'HOLD FOR EXTRA POWER · RELEASE TO STRIKE' : 'AIM ON PITCH · DRAG DOWN · RELEASE';
     if (match && !busy) {
       if (view.phase === 'innings-break') { $('nextButton').textContent = 'Start the chase →'; $('nextButton').disabled = mode === 'online' && !room?.isHost; }
       else if (view.phase === 'finished') { $('nextButton').textContent = rematchRequested ? 'Waiting for friend…' : 'Play again ↗'; $('nextButton').disabled = rematchRequested || (mode === 'online' && !connected); }
@@ -200,11 +222,13 @@
   }
   function startAutomaticBall() {
     if (!match || busy || match.phase !== 'playing' || paused || document.visibilityState === 'hidden' || panelOpen()) return;
-    beginDelivery({type: match.scores[match.batter].balls === 0 ? 'spin' : randomType(), seed: randomUint(), id: `${match.ball + 1}`});
+    const type = match.scores[match.batter].balls === 0 ? 'spin' : randomType();
+    const seed = randomUint();
+    beginDelivery({type, seed, line: ((seed >>> 8) % 101 - 50) / 100, length: type === 'yorker' ? .95 : type === 'spin' ? .35 : .4 + ((seed >>> 16) % 31) / 100, speed: .5 + (seed % 41) / 100, id: `${match.ball + 1}`});
   }
   function beginDelivery(delivery) {
     if (!match || busy || match.phase !== 'playing') return;
-    busy = true; currentDelivery = delivery; pendingMatch = null;
+    bowlingPending = false; busy = true; currentDelivery = delivery; pendingMatch = null;
     $('outcomeBadge').hidden = true; $('stadiumTag').textContent = `${delivery.type.toUpperCase()} DELIVERY`;
     $('fieldCaption').textContent = amBatting() ? 'Eyes on the ball. Swing at the crease.' : 'Field set. Make this one count.';
     pitch.startDelivery(delivery, {interactive: amBatting()}); render();
@@ -214,7 +238,7 @@
       const timing = miss ? null : (randomUint() % 451) - 225;
       const angle = (randomUint() / 4294967295 * 2 - 1) * Math.PI;
       const power = .28 + randomUint() / 4294967295 * .72;
-      const delay = Engine.deliveryDuration(delivery.type) + (timing ?? 220);
+      const delay = Engine.deliveryDuration(delivery.type, delivery.speed) + (timing ?? 220);
       later(() => {
         if (!busy || currentDelivery?.id !== delivery.id) return;
         const shot = {timing, angle, power}; pitch.showShot(shot); receiveSwing(shot);
@@ -280,7 +304,7 @@
         connected = status === 'connected';
         $('connectionBadge').textContent = connected ? '● Friend connected' : '● Offline ready';
         roomStatus(messages[status] || status);
-        if (status === 'disconnected') { clearTimers(); pitch.reset(); busy = false; currentDelivery = null; pendingMatch = null; }
+        if (status === 'disconnected') { clearTimers(); pitch.reset(); busy = false; bowlingPending = false; currentDelivery = null; pendingMatch = null; }
         render();
       },
       onLobby: lobby => {
@@ -315,10 +339,22 @@
   $('roomInput').onkeydown = event => { if (event.key === 'Enter') $('joinButton').click(); };
   $('nextButton').onclick = () => { if (!match || busy) return; if (match.phase === 'innings-break') continueInnings(); else if (match.phase === 'finished') playAgain(); else startAutomaticBall(); };
   $('pauseButton').onclick = () => { pauseFor('manual', !pauseReasons.has('manual')); render(); schedulePlay(); };
-  document.querySelectorAll('[data-delivery]').forEach(button => button.onclick = async () => {
-    if (!match || busy || amBatting() || match.phase !== 'playing') return;
-    try { mode === 'online' ? await room.bowl(button.dataset.delivery) : beginDelivery({type: button.dataset.delivery, seed: randomUint(), id: `${match.ball + 1}`}); } catch (error) { toast(error.message); }
+  document.querySelectorAll('[data-delivery]').forEach(button => button.onclick = () => {
+    if (button.disabled) return;
+    selectedBowlingType = button.dataset.delivery;
+    pitch.setBowlingType?.(selectedBowlingType);
+    render();
   });
+  async function dispatchBowl(aim = pitch.bowlingAim) {
+    if (!match || busy || bowlingPending || paused || panelOpen() || document.visibilityState === 'hidden' || amBatting() || match.phase !== 'playing' || (mode === 'online' && !connected)) return;
+    try {
+      const options = Engine.bowlingOptions(aim);
+      bowlingPending = true; render();
+      if (mode === 'online') await room.bowl(selectedBowlingType, options);
+      else beginDelivery({type: selectedBowlingType, ...options, seed: randomUint(), id: `${match.ball + 1}`});
+    } catch (error) { bowlingPending = false; render(); toast(error.message); }
+  }
+  $('bowlButton').onclick = () => dispatchBowl();
   function changeAim(delta) {
     const aim = pitch.shotAim || {angle: -Math.PI / 2, power: .7};
     const angle = Math.atan2(Math.sin(aim.angle + delta), Math.cos(aim.angle + delta));
@@ -346,7 +382,17 @@
     if (!$('gameMenu').hidden) { if (event.key === 'Escape') { event.preventDefault(); closeMenu(); } trapFocus(event, $('gameMenu')); return; }
     if (event.key === 'Escape') { event.preventDefault(); showMenu(); return; }
     if (['INPUT', 'SELECT', 'TEXTAREA'].includes(event.target.tagName) || event.repeat || !match) return;
-    if (event.code === 'Space' && !$('swingButton').disabled) { event.preventDefault(); spaceHeld = pitch.startCharge(); }
+    if (event.code === 'Space' && !$('bowlButton').disabled) { event.preventDefault(); dispatchBowl(); }
+    else if (event.code === 'Space' && !$('swingButton').disabled) { event.preventDefault(); spaceHeld = pitch.startCharge(); }
+    else if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key) && !$('bowlButton').disabled) {
+      event.preventDefault();
+      const aim = Engine.bowlingOptions(pitch.bowlingAim);
+      if (event.key === 'ArrowLeft') aim.line = Math.max(-1, aim.line - .15);
+      if (event.key === 'ArrowRight') aim.line = Math.min(1, aim.line + .15);
+      if (event.key === 'ArrowUp') aim.length = Math.max(0, aim.length - .1);
+      if (event.key === 'ArrowDown') aim.length = Math.min(1, aim.length + .1);
+      pitch.setBowlingAim?.(aim);
+    }
     else if (event.key === 'ArrowLeft' && !$('aimLeft').disabled) { event.preventDefault(); changeAim(-.15); }
     else if (event.key === 'ArrowRight' && !$('aimRight').disabled) { event.preventDefault(); changeAim(.15); }
     else if (event.key.toLowerCase() === 'p' && mode !== 'online' && match.phase === 'playing') { event.preventDefault(); $('pauseButton').click(); }
@@ -362,7 +408,7 @@
     try { await navigator.clipboard.writeText(url.toString()); toast('Invite copied! Send it to your friend.'); } catch { toast(`Room code: ${room.code}. Share it with your friend.`); }
   };
   $('soundButton').onclick = () => { sound = !sound; safeWrite('pocket-cricket-sound', sound); updateSound(); if (sound) tone({runs: 4, wicket: false}); };
-  $('helpButton').onclick = () => showModal({title: 'Rules & timing', description: 'Six balls per over. Three wickets per team. Bat for two innings; the chase ends as soon as the target is reached. Click when the ball reaches the bat, or hold and release for extra power. Close targets produce grounded shots; far targets produce lofted shots that can be caught. Choose pace, spin or yorker when bowling. Offline play pauses in menus; online play continues.', primary: 'Back to controls'});
+  $('helpButton').onclick = () => showModal({title: 'Rules & timing', description: 'Six balls per over. Three wickets per team. Two innings. Bat: click as the ball reaches the bat, or hold and release for extra power. Bowl: choose a delivery type, aim the landing target on the pitch, drag down for more speed and release. Space or BOWL uses your current target. Lofted shots can be caught. Offline play pauses in menus; online play continues.', primary: 'Back to controls'});
   $('menuTabMatch').onclick = () => selectMenuTab('match');
   $('menuTabControls').onclick = () => selectMenuTab('controls');
   ['menuTabMatch', 'menuTabControls'].forEach(id => $(id).addEventListener('keydown', event => {
@@ -395,5 +441,5 @@
   showMenu();
   const invite = new URLSearchParams(location.search).get('room');
   if (invite && /^[A-Z2-9]{6,8}$/.test(invite.toUpperCase())) { setMode('online'); $('roomInput').value = invite.toUpperCase(); toast('Enter your team name, then Join your friend’s room.'); }
-  if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('./sw.js').catch(() => {});
+  if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('./sw.js', {updateViaCache: 'none'}).catch(() => {});
 })();

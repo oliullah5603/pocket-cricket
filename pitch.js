@@ -30,6 +30,11 @@
       this.onProgress = callbacks.onProgress || (() => {});
       this.onAim = callbacks.onAim || (() => {});
       this.onCharge = callbacks.onCharge || (() => {});
+      this.onBowlAim = callbacks.onBowlAim || (() => {});
+      this.onBowl = callbacks.onBowl || (() => {});
+      this._bowlingMode = false;
+      this._bowlingDragging = false;
+      this._bowlingAim = { type: 'pace', line: 0, length: .6, speed: .65 };
       this._aim = 0;
       this._angle = -Math.PI / 2;
       this._power = .76;
@@ -46,7 +51,8 @@
       this._missed = false;
       this._elapsed = 0;
       this._start = 0;
-      this._duration = 1400;
+      this._duration = 1900;
+      this._releaseAt = 780;
       this._interactive = true;
       this._frameId = null;
       this._destroyed = false;
@@ -62,10 +68,26 @@
       canvas.style.touchAction = 'none';
       this._pointerMove = event => {
         if (this._pointerId !== null && event.pointerId !== this._pointerId) return;
+        if (this._bowlingMode && !this.active && !this._paused) {
+          if (this._bowlingDragging) this._updateBowlDrag(event);
+          else this._bowlAimFromPointer(event);
+          return;
+        }
         this._aimFromPointer(event);
       };
       this._pointerDown = event => {
-        if (event.button > 0 || event.isPrimary === false || !this.active || this._paused || !this._interactive || this._shot) return;
+        if (event.button > 0 || event.isPrimary === false || this._paused) return;
+        if (this._bowlingMode && !this.active) {
+          event.preventDefault();
+          this._bowlAimFromPointer(event);
+          this._bowlingAnchor = this.clientToLogical(event.clientX, event.clientY);
+          this._bowlingDragging = true;
+          this.setBowlingAim({ speed: .65 });
+          this._pointerId = event.pointerId;
+          try { canvas.setPointerCapture(event.pointerId); } catch (_) { /* Synthetic events may not support capture. */ }
+          return;
+        }
+        if (!this.active || !this._interactive || this._shot) return;
         event.preventDefault();
         this._aimFromPointer(event);
         if (this.startCharge()) {
@@ -76,13 +98,24 @@
       this._pointerUp = event => {
         if (this._pointerId !== event.pointerId) return;
         event.preventDefault();
+        if (this._bowlingDragging) {
+          this._updateBowlDrag(event);
+          this._bowlingDragging = false;
+          this._releasePointer();
+          const aim = this.bowlingAim;
+          this.onBowl(aim);
+          this._draw();
+          return;
+        }
         this._aimFromPointer(event);
         this._releasePointer();
+        this._bowlingDragging = false;
         if (this._charging) this.releaseShot();
       };
       this._pointerCancel = event => {
         if (this._pointerId !== event.pointerId) return;
         this._releasePointer();
+        this._bowlingDragging = false;
         this._cancelCharge();
         if (!this.active || this._paused) this._draw();
       };
@@ -102,6 +135,7 @@
 
     get active() { return this._delivery !== null; }
     get paused() { return this._paused; }
+    get bowlingAim() { return { ...this._bowlingAim }; }
     get shotAim() {
       const power = this._effectivePower();
       return { angle: this._angle, power, shot: window.CricketEngine?.shotName?.(this._angle, power) || (power >= .72 ? 'Lofted drive' : 'Grounded drive') };
@@ -110,13 +144,17 @@
     startDelivery(delivery = {}, options = {}) {
       if (this._destroyed) return;
       this._cancelCharge();
+      this._bowlingDragging = false;
       this._releasePointer();
       this._paused = false;
       this._delivery = { ...delivery, type: ['pace', 'spin', 'yorker'].includes(delivery.type) ? delivery.type : 'pace' };
+      const bowling = window.CricketEngine?.bowlingOptions?.(this._delivery) || { line: this._delivery.line ?? 0, length: this._delivery.length ?? .6, speed: this._delivery.speed ?? .65 };
+      Object.assign(this._delivery, bowling);
       this._sceneDelivery = this._delivery;
       this._fielders = window.CricketEngine?.fielders?.(this._delivery.seed || 0) || FIELDERS;
-      const engineDuration = window.CricketEngine?.deliveryDuration?.(this._delivery.type);
-      this._duration = Number.isFinite(engineDuration) && engineDuration > 0 ? engineDuration : ({ pace: 1400, spin: 1800, yorker: 1150 }[this._delivery.type]);
+      const engineDuration = window.CricketEngine?.deliveryDuration?.(this._delivery.type, this._delivery.speed);
+      this._duration = Number.isFinite(engineDuration) && engineDuration > 0 ? engineDuration : ({ pace: 1900, spin: 2250, yorker: 1750 }[this._delivery.type]);
+      this._releaseAt = { pace: 780, spin: 840, yorker: 740 }[this._delivery.type];
       this._interactive = options.interactive !== false;
       this._shot = null;
       this._result = null;
@@ -126,12 +164,47 @@
       this._elapsed = 0;
       this._start = performance.now();
       this._finishAt = Infinity;
+      this._catchAt = Infinity;
       this._hitAt = this._duration + 50;
       this._target = null;
       this._nearestFielder = -1;
       this.onProgress(0);
       this.onAim(this.shotAim);
+      this._resize();
       this._requestFrame();
+    }
+
+    setBowlingMode(enabled) {
+      const mode = Boolean(enabled);
+      if (mode === this._bowlingMode) return;
+      this._bowlingMode = mode;
+      if (!mode && this._bowlingDragging) { this._bowlingDragging = false; this._releasePointer(); }
+      this.onBowlAim(this.bowlingAim);
+      this._resize();
+    }
+
+    setBowlingType(type) {
+      if (!['pace', 'spin', 'yorker'].includes(type)) return;
+      this._bowlingAim.type = type;
+      this.setBowlingAim({ length: { pace: .6, spin: .35, yorker: .95 }[type] });
+    }
+
+    setBowlingAim(aim = {}) {
+      for (const [key, min, max] of [['line', -1, 1], ['length', 0, 1], ['speed', .25, 1]]) {
+        if (Number.isFinite(aim[key])) this._bowlingAim[key] = clamp(aim[key], min, max);
+      }
+      this.onBowlAim(this.bowlingAim);
+      if (!this.active || this._paused) this._draw();
+    }
+
+    _bowlAimFromPointer(event) {
+      const point = this.clientToLogical(event.clientX, event.clientY);
+      this.setBowlingAim({ line: (point.x - 360) / 24, length: (point.y - 208) / 65 });
+    }
+
+    _updateBowlDrag(event) {
+      const point = this.clientToLogical(event.clientX, event.clientY);
+      this.setBowlingAim({ speed: .65 + (point.y - this._bowlingAnchor.y) / 70 * .35 });
     }
 
     setAim(aim) {
@@ -187,6 +260,7 @@
 
     cancelCharge() {
       this._cancelCharge();
+      this._bowlingDragging = false;
       this._releasePointer();
       if (!this.active || this._paused) this._draw();
     }
@@ -222,6 +296,7 @@
 
     reset() {
       this._cancelCharge();
+      this._bowlingDragging = false;
       this._releasePointer();
       if (this._frameId !== null) cancelAnimationFrame(this._frameId);
       this._frameId = null;
@@ -285,9 +360,11 @@
       const hudBottom=Math.max(scoreRect?.height>0 ? scoreRect.bottom-canvasRect.top : 0,headerRect?.height>0 ? headerRect.bottom-canvasRect.top : 0);
       const sceneTop = hasControls ? Math.max(12,hudBottom+10) : 0;
       const sceneBottom = hasControls ? Math.max(sceneTop + 30, controlsTop - 14) : height;
-      const fieldTop=hasControls?73:0,fieldBottom=hasControls?363:H;
-      const scale = Math.min((width - (hasControls ? 16 : 0)) / W, (sceneBottom - sceneTop) / (fieldBottom-fieldTop));
-      this._view = { width, height, dpr, scale, sceneTop, sceneBottom, offsetX: (width - W * scale) / 2, offsetY: sceneTop + (sceneBottom - sceneTop - (fieldBottom-fieldTop) * scale) / 2-fieldTop*scale };
+      const bowlingZoom=this._bowlingMode && !this.active;
+      const fieldTop=bowlingZoom?86:hasControls?73:0,fieldBottom=bowlingZoom?350:hasControls?363:H;
+      const fieldWidth=bowlingZoom?168:W;
+      const scale = Math.min((width - (hasControls ? 16 : 0)) / fieldWidth, (sceneBottom - sceneTop) / (fieldBottom-fieldTop));
+      this._view = { width, height, dpr, scale, sceneTop, sceneBottom, bowlingZoom, offsetX: width/2-360*scale, offsetY: sceneTop + (sceneBottom - sceneTop - (fieldBottom-fieldTop) * scale) / 2-fieldTop*scale };
       this._buildStaticLayer();
       this._draw();
     }
@@ -317,7 +394,8 @@
       this._hitAt = Math.max(this._duration + 50, this._swingAt === Infinity ? 0 : this._swingAt + 35);
       this._flightDuration = this._bowled || this._missed ? 650 : Math.round(950 + clamp(this._result.distance || 0, 0, 1.4) * 400 + (this._result.elevation || 0) * 300);
       this._returnDuration = this._caught || this._bowled || this._missed || this._result.runs >= 4 ? 0 : 460;
-      this._finishAt = this._hitAt + this._flightDuration + this._returnDuration + 160;
+      this._catchAt = this._hitAt + this._flightDuration;
+      this._finishAt = this._catchAt + (this._caught ? 360 : this._returnDuration + 160);
       this._target = this._shotTarget(this._result);
       let best = Infinity;
       this._fielders.forEach((fielder, index) => {
@@ -359,7 +437,7 @@
 
     _shotTarget(result) {
       if (this._bowled) return { x: 362, y: 303 };
-      if (this._missed) return { x: 360, y: 328 };
+      if (this._missed) return { x: this._contactPoint().x, y: 328 };
       return this._boundaryPoint(Number.isFinite(result.angle) ? result.angle : this._shot.angle, Number.isFinite(result.distance) ? result.distance : .3);
     }
 
@@ -377,23 +455,87 @@
       return { x: CONTACT.x + dx * distance * factor, y: CONTACT.y + dy * distance * factor };
     }
 
+    _contactPoint() {
+      return { x: CONTACT.x + clamp(Number(this._sceneDelivery?.line) || 0, -1, 1) * 12, y: CONTACT.y };
+    }
+
+    deliveryPhase(elapsed = this._elapsed) {
+      const type=this._sceneDelivery?.type || this._bowlingAim.type;
+      const releaseAt={pace:780,spin:840,yorker:740}[type];
+      const runEnd=releaseAt*.59,gatherEnd=releaseAt*.75,plantEnd=releaseAt*.87;
+      const t=Math.max(0,elapsed),scale=1.02;
+      let phase,bodyY,stride=0,rightElbow,rightHand,leftElbow,leftHand,frontFoot;
+      const rightShoulder={x:4.6,y:-7};
+      if(t<runEnd){
+        phase='run-up';const p=t/runEnd;bodyY=lerp(104,133,smooth(p));stride=Math.sin(p*Math.PI*6)*.82;
+        rightElbow={x:7.2,y:1+stride*2};rightHand={x:7.7,y:6.7+stride*4};
+        leftElbow={x:-7.1,y:1-stride*2};leftHand={x:-7.7,y:6.7-stride*4};
+        frontFoot={x:-3.5-stride*3.4,y:21-stride*1.7};
+      }else if(t<gatherEnd){
+        phase='gather';const p=(t-runEnd)/(gatherEnd-runEnd),q=smooth(p);bodyY=lerp(133,139,q)-Math.sin(p*Math.PI)*2.3;
+        rightElbow={x:lerp(7.2,14.5,q),y:lerp(1,-8.5,q)};
+        rightHand={x:lerp(7.7,26.3,q),y:lerp(6.7,-10.3,q)};
+        leftElbow={x:lerp(-7.1,-6.5,q),y:lerp(1,-10,q)};leftHand={x:lerp(-7.7,-2,q),y:lerp(6.7,-18,q)};
+        frontFoot={x:lerp(-3.5,-5,q),y:lerp(21,25,q)};
+      }else if(t<releaseAt){
+        phase=t<plantEnd?'front-foot':'overarm';const p=(t-gatherEnd)/(releaseAt-gatherEnd),q=smooth(p);bodyY=lerp(139,147,q);
+        const angle=lerp(-.15,-Math.PI/2,q);
+        rightElbow={x:rightShoulder.x+Math.cos(angle)*10,y:rightShoulder.y+Math.sin(angle)*10};
+        rightHand={x:rightShoulder.x+Math.cos(angle)*22,y:rightShoulder.y+Math.sin(angle)*22};
+        leftElbow={x:lerp(-6.5,-8,q),y:lerp(-10,-2,q)};leftHand={x:lerp(-2,-7,q),y:lerp(-18,7,q)};
+        frontFoot={x:-5,y:25};
+      }else{
+        const p=clamp((t-releaseAt)/430,0,1),q=smooth(p);phase=p<1?'follow-through':'set';bodyY=147+Math.sin(p*Math.PI)*4;
+        const angle=lerp(-Math.PI/2,1.02,q);
+        rightElbow={x:lerp(rightShoulder.x+Math.cos(angle)*10,7.2,q),y:lerp(rightShoulder.y+Math.sin(angle)*10,1,q)};
+        rightHand={x:lerp(rightShoulder.x+Math.cos(angle)*22,7.7,q),y:lerp(rightShoulder.y+Math.sin(angle)*22,6.7,q)};
+        leftElbow={x:-7.1,y:1};leftHand={x:-7.7,y:6.7};frontFoot={x:lerp(-5,-3.5,q),y:lerp(25,21,q)};
+      }
+      const position={x:361,y:bodyY};
+      const absolute=point=>({x:position.x+point.x*scale,y:position.y+point.y*scale});
+      return {phase,releaseAt,position,stride,rightShoulder:absolute(rightShoulder),rightElbow:absolute(rightElbow),rightHand:absolute(rightHand),leftElbow:absolute(leftElbow),leftHand:absolute(leftHand),frontFoot:absolute(frontFoot),released:t>=releaseAt};
+    }
+
     _incomingPosition(elapsed) {
-      const p = clamp((elapsed - 190) / (this._duration - 190), 0, 1);
+      const release=this.deliveryPhase(this._releaseAt);
+      const p = clamp((elapsed - this._releaseAt) / (this._duration - this._releaseAt), 0, 1);
       const type = this._sceneDelivery?.type || 'pace';
       const side = ((this._sceneDelivery?.seed || 1) & 1) ? 1 : -1;
-      const curve = type === 'spin' ? Math.sin(p * Math.PI) * 19 * side : Math.sin(p * Math.PI) * 3 * side;
-      const bounce = type === 'yorker' ? 0.91 : 0.68;
-      const height = p < bounce ? Math.sin(p / bounce * Math.PI) * 15 : Math.sin((p - bounce) / (1 - bounce) * Math.PI) * (type === 'yorker' ? 3 : 8);
-      return { x: 360 + curve, y: lerp(153, CONTACT.y, p), height, p };
+      const contact=this._contactPoint(),bouncePoint={x:360+this._sceneDelivery.line*24,y:208+this._sceneDelivery.length*65};
+      const releaseHeight=Math.max(43,release.frontFoot.y-release.rightHand.y),releaseGroundY=release.rightHand.y+releaseHeight;
+      const bounce=clamp((bouncePoint.y-releaseGroundY)/(contact.y-releaseGroundY),.32,.95);
+      const before=p<=bounce,local=before?p/bounce:(p-bounce)/(1-bounce);
+      const apex=type==='spin'?24:14;
+      const height=before?Math.max(0,releaseHeight+apex*local-(releaseHeight+apex)*local*local):Math.sin(local*Math.PI)*(type==='yorker'?3.5:type==='spin'?12:8);
+      const x=before?lerp(release.rightHand.x,bouncePoint.x,local):lerp(bouncePoint.x,contact.x,local);
+      const curve=type==='spin' && !before?Math.sin(local*Math.PI)*12*side:Math.sin(local*Math.PI)*(before?1.8:.8)*side;
+      return {x:x+curve,y:lerp(releaseGroundY,contact.y,p),height,p,bounce,bouncePoint};
     }
 
     _hitPosition(progress) {
       const p = clamp(progress, 0, 1);
-      if (this._bowled || this._missed) return { x: lerp(CONTACT.x, this._target.x, p), y: lerp(CONTACT.y, this._target.y, p), height: Math.sin(p * Math.PI) * 4 };
+      const contact=this._contactPoint();
+      if (this._bowled || this._missed) return { x: lerp(contact.x, this._target.x, p), y: lerp(contact.y, this._target.y, p), height: Math.sin(p * Math.PI) * (this._missed && this._sceneDelivery.length<.35?18:4) };
       const elevation = clamp(Number(this._result.elevation) || 0, 0, 1);
       const travel = elevation > .35 ? smooth(p) : ease(p);
       const height = elevation > .18 ? Math.sin(p * Math.PI) * (16 + elevation * 100) + (this._caught ? smooth(p) * 12 : 0) : Math.max(0, Math.sin(p * Math.PI * 5)) * (1 - p) * 5;
-      return { x: lerp(CONTACT.x, this._target.x, travel), y: lerp(CONTACT.y, this._target.y, travel), height };
+      return { x: lerp(contact.x, this._target.x, travel), y: lerp(contact.y, this._target.y, travel), height };
+    }
+
+    ballStateAt(elapsed = this._elapsed) {
+      if(!this._sceneDelivery && !this._bowlingMode) return {owner:'none',phase:'idle',position:null,visibleCount:0};
+      if((this._bowlingMode && !this.active) || (!this._shot && elapsed<this._releaseAt) || (this._sceneDelivery && elapsed<this._releaseAt)){
+        const pose=this.deliveryPhase(this._bowlingMode && !this.active?0:elapsed);
+        return {owner:'bowler',phase:pose.phase,position:{x:pose.rightHand.x,y:pose.rightHand.y,height:0},visibleCount:1};
+      }
+      if(!this._shot || elapsed<this._hitAt)return {owner:'flight',phase:'delivery',position:this._incomingPosition(elapsed),visibleCount:1};
+      const flightP=clamp((elapsed-this._hitAt)/this._flightDuration,0,1);
+      if(this._caught && elapsed>=this._catchAt)return {owner:'fielder',phase:'caught',fielderIndex:this._nearestFielder,position:{x:this._target.x,y:this._target.y,height:11.5},visibleCount:1};
+      if(this._returnDuration>0 && elapsed>=this._hitAt+this._flightDuration){
+        const p=clamp((elapsed-this._hitAt-this._flightDuration)/this._returnDuration,0,1);
+        return {owner:'return',phase:'fielding-return',position:{x:lerp(this._target.x,360,p),y:lerp(this._target.y,182,p),height:Math.sin(p*Math.PI)*29+(1-p)*9},visibleCount:1};
+      }
+      return {owner:'hit-flight',phase:this._bowled?'bowled':this._missed?'miss':'shot',position:this._hitPosition(flightP),visibleCount:1};
     }
 
     _ellipse(x, y, rx, ry, color, stroke, width = 1) {
@@ -470,7 +612,7 @@
       this._drawAim();
       this._drawFielders();
       this._drawPlayers();
-      if (this._sceneDelivery) this._drawBall();
+      if (this._sceneDelivery || this._bowlingMode) this._drawBall();
       this._drawOverlay();
     }
 
@@ -571,7 +713,34 @@
       }
     }
 
+    _drawBowlingAim() {
+      const ctx=this.ctx,aim=this._bowlingAim,target={x:360+aim.line*24,y:208+aim.length*65};
+      ctx.save();ctx.lineCap='round';ctx.textAlign='center';ctx.textBaseline='middle';
+      ctx.fillStyle='rgba(19,42,48,.14)';ctx.fillRect(332,205,56,71);
+      ctx.setLineDash([2,3]);ctx.strokeStyle='rgba(223,235,224,.48)';ctx.lineWidth=.65;ctx.strokeRect(332,205,56,71);
+      [224,245,264].forEach(y=>this._line(334,y,386,y,'rgba(223,235,224,.20)',.5));ctx.setLineDash([]);
+      const release=this.deliveryPhase(0).rightHand;
+      ctx.setLineDash([2,4]);this._line(release.x,release.y,target.x,target.y,'rgba(249,198,112,.43)',.8);ctx.setLineDash([]);
+      this._ellipse(target.x,target.y,10,5,'rgba(238,175,82,.14)','#e7b563',1.35);
+      this._ellipse(target.x,target.y,4,2,null,'#e8c181',.85);
+      this._line(target.x-14,target.y,target.x-7,target.y,'#efd4a0',.85);
+      this._line(target.x+7,target.y,target.x+14,target.y,'#efd4a0',.85);
+      this._line(target.x,target.y-9,target.x,target.y-4,'#efd4a0',.85);
+      this._line(target.x,target.y+4,target.x,target.y+9,'#efd4a0',.85);
+      ctx.font='700 7px system-ui,sans-serif';ctx.fillStyle='#e2eadc';ctx.fillText(aim.type.toUpperCase(),360,198);
+      ctx.font='500 5.6px system-ui,sans-serif';ctx.fillStyle='#d3ded1';
+      ctx.textAlign='right';ctx.fillText('SHORT',328,211);ctx.fillText('FULL',328,270);
+      ctx.textAlign='center';ctx.fillStyle='#e8c181';ctx.font='700 6px system-ui,sans-serif';
+      ctx.fillText(`${Math.round(aim.speed*100)}%`,406,198);
+      ctx.fillStyle='rgba(8,33,36,.47)';ctx.fillRect(403,205,6,66);
+      ctx.fillStyle='#d8be82';ctx.fillRect(404,270-64*aim.speed,4,64*aim.speed);
+      this._line(402,271,410,271,'#899f94',.6);
+      ctx.font='600 5.4px system-ui,sans-serif';ctx.fillStyle='#d4ded0';ctx.fillText(this._bowlingDragging?'RELEASE TO BOWL':'AIM · PULL DOWN · RELEASE',360,316);
+      ctx.restore();
+    }
+
     _drawAim() {
+      if(this._bowlingMode && !this.active){this._drawBowlingAim();return;}
       if (this._shot && this._elapsed >= this._hitAt) return;
       const ctx = this.ctx;
       const power = this._effectivePower();
@@ -643,11 +812,9 @@
       this._drawStumps(360, 174, .85, false);
       this._drawStumps(360, 298, 1, Boolean(this._bowled && this._elapsed > this._hitAt + 240));
       if (this.active && this._elapsed < this._hitAt) {
-        const p = this._incomingPosition(this._elapsed).p;
-        const bounce = this._sceneDelivery.type === 'yorker' ? .91 : .68;
-        const bounceY = lerp(153, CONTACT.y, bounce);
-        this._ellipse(360, bounceY, 7, 3.5, 'rgba(244, 244, 192, .08)', 'rgba(250, 240, 171, .28)', 1);
-        if (p > bounce && p < bounce + .07) this._ellipse(360, bounceY, 6 + (p - bounce) * 70, 3 + (p - bounce) * 30, null, `rgba(239, 219, 156, ${.5 - (p - bounce) * 6})`, 1);
+        const {p,bounce,bouncePoint}=this._incomingPosition(this._elapsed);
+        this._ellipse(bouncePoint.x,bouncePoint.y,5.2,2.8,'rgba(218,220,180,.04)','rgba(233,228,192,.19)',.65);
+        if(p>bounce && p<bounce+.05)this._ellipse(bouncePoint.x,bouncePoint.y,4+(p-bounce)*70,2+(p-bounce)*30,null,`rgba(210,194,156,${.25-(p-bounce)*4})`,.6);
       }
     }
 
@@ -704,6 +871,7 @@
       const rightKnee={x:2.9-stride*1.2,y:12-stride*1.8};
       const leftFoot={x:-3.5-stride*3.4,y:21-stride*1.7};
       const rightFoot={x:3.5+stride*3.4,y:21+stride*1.7};
+      if(pose.bowlingJoints)Object.assign(leftFoot,{x:(pose.bowlingJoints.frontFoot.x-x)/scale,y:(pose.bowlingJoints.frontFoot.y-y)/scale});
       ctx.save(); ctx.translate(x+6*scale,y+20*scale);ctx.rotate(.32);
       ctx.shadowColor='rgba(5,21,17,.15)';ctx.shadowBlur=2.8*scale;
       this._ellipse(4*scale,0,12*scale,2.4*scale,'rgba(7,28,20,.17)');ctx.restore();
@@ -734,8 +902,13 @@
       const shoulderY=-7+crouch;
       const leftElbow={x:pose.batter?-5:-7.1,y:pose.catch?-4:pose.batter?-1:1+crouch-stride*1.5};
       const rightElbow={x:pose.batter?5:7.2-lift*1.7,y:pose.catch?-4:pose.batter?-1:1+crouch-lift*16+stride*1.5};
-      const leftHand=pose.catch?{x:-2.4,y:-11.5}:pose.batter?{x:2,y:-4}:{x:-7.7,y:6.7+crouch-stride*2};
-      const rightHand=pose.catch?{x:2.4,y:-11.5}:pose.batter?{x:4,y:-4}:{x:7.7-lift*5,y:6.7+crouch-lift*34+stride*2};
+      const leftHand=pose.catch?{x:-2.4,y:-11.5}:pose.batter?{x:2+(pose.handOffset||0),y:-4}:{x:-7.7,y:6.7+crouch-stride*2};
+      const rightHand=pose.catch?{x:2.4,y:-11.5}:pose.batter?{x:4+(pose.handOffset||0),y:-4}:{x:7.7-lift*5,y:6.7+crouch-lift*34+stride*2};
+      if(pose.bowlingJoints){
+        const local=p=>({x:(p.x-x)/scale,y:(p.y-y)/scale});
+        Object.assign(leftElbow,local(pose.bowlingJoints.leftElbow));Object.assign(leftHand,local(pose.bowlingJoints.leftHand));
+        Object.assign(rightElbow,local(pose.bowlingJoints.rightElbow));Object.assign(rightHand,local(pose.bowlingJoints.rightHand));
+      }
       if(pose.keeper && !pose.catch){leftHand.x=-4.8;rightHand.x=4.8;leftHand.y=6+crouch;rightHand.y=6+crouch;}
       limb({x:-4.6,y:shoulderY},leftElbow,2.8);limb(leftElbow,leftHand,2.05,false);
       limb({x:4.6,y:shoulderY},rightElbow,2.8);limb(rightElbow,rightHand,2.05,false);
@@ -766,26 +939,28 @@
         this._line(facing*1.1,-16.9+crouch,facing*4.8,-16.8+crouch,'#213c56',1);
       }
       const gloves=pose.batter||pose.keeper||pose.catch;
-      this._ellipse(leftHand.x,leftHand.y,gloves?1.55:1.0,gloves?1.8:1.15,gloves?'#e9e9df':skin);
-      this._ellipse(rightHand.x,rightHand.y,gloves?1.55:1.0,gloves?1.8:1.15,gloves?'#e9e9df':skin);
-      if(gloves){this._line(leftHand.x-1,leftHand.y+.5,leftHand.x+1,leftHand.y+.5,'#829a9d',.5);this._line(rightHand.x-1,rightHand.y+.5,rightHand.x+1,rightHand.y+.5,'#829a9d',.5);}
+      if(gloves){
+        [leftHand,rightHand].forEach(hand=>{
+          ctx.beginPath();ctx.moveTo(hand.x-1,hand.y-1.9);ctx.lineTo(hand.x+1,hand.y-1.9);ctx.lineTo(hand.x+1.6,hand.y-.8);ctx.lineTo(hand.x+1.5,hand.y+1.6);ctx.lineTo(hand.x-1.4,hand.y+1.6);ctx.lineTo(hand.x-1.6,hand.y-.8);ctx.closePath();ctx.fillStyle='#d6dcd4';ctx.fill();
+          this._line(hand.x-.9,hand.y+.4,hand.x+.9,hand.y+.4,'#849590',.45);
+        });
+      }else{this._ellipse(leftHand.x,leftHand.y,1,1.15,skin);this._ellipse(rightHand.x,rightHand.y,1,1.15,skin);}
       ctx.restore();
     }
 
     _drawPlayers() {
-      const deliveryProgress = this._sceneDelivery ? clamp(this._elapsed / 230, 0, 1) : 0;
-      const bowlerY = this.active ? lerp(127, 145, smooth(deliveryProgress)) : 145;
-      const bowlerArm = this.active && this._elapsed < 280 ? Math.sin(deliveryProgress * Math.PI) * 1.45 : 0;
-      this._drawPlayer(361, bowlerY, 1.02, Math.PI, '#f0924f', this.active && this._elapsed < 210 ? Math.sin(deliveryProgress * 8) * .4 : 0, bowlerArm,{index:2});
+      const bowlingPose=this.deliveryPhase(this._bowlingMode && !this.active?0:this._sceneDelivery?this._elapsed:1250);
+      this._drawPlayer(bowlingPose.position.x,bowlingPose.position.y,1.02,Math.PI,'#f0924f',bowlingPose.stride,0,{index:2,bowlingJoints:bowlingPose});
       const hitProgress = this._shot && this._elapsed >= this._hitAt ? clamp((this._elapsed - this._hitAt) / this._flightDuration, 0, 1) : 0;
       const running = hitProgress > 0 && !this._result.wicket && this._result.runs > 0 && this._result.runs < 4;
       const runP = running ? .5 - Math.cos(hitProgress * Math.PI * Math.min(this._result.runs, 3)) * .5 : 0;
       const batterY = running ? lerp(288, 188, runP) : 288;
       const partnerY = running ? lerp(188, 288, runP) : 188;
       this._drawPlayer(374, partnerY, .94, running && Math.sin(hitProgress * Math.PI * this._result.runs) < 0 ? 0 : Math.PI, '#f7efce', running ? Math.sin(hitProgress * 30) : 0,0,{index:1,batter:true});
-      this._drawPlayer(347, batterY, 1.08, 0, '#f7efce', running ? Math.sin(hitProgress * 30) : 0,0,{index:3,batter:true});
+      const handOffset=running?0:this._contactPoint().x-CONTACT.x;
+      this._drawPlayer(347, batterY, 1.08, 0, '#f7efce', running ? Math.sin(hitProgress * 30) : 0,0,{index:3,batter:true,handOffset:handOffset/1.08});
       const ctx = this.ctx;
-      ctx.save(); ctx.translate(347, batterY - 5);
+      ctx.save(); ctx.translate(347+handOffset, batterY - 5);
       let batAngle = -1.05;
       if (this._shot && this._swingAt !== Infinity) {
         const swingP = clamp((this._elapsed - this._swingAt) / 290, 0, 1);
@@ -809,45 +984,47 @@
     }
 
     _drawBall() {
-      if (this._elapsed < 190) return;
-      const afterHit = this._shot && this._elapsed >= this._hitAt;
-      const hitP = afterHit ? clamp((this._elapsed - this._hitAt) / this._flightDuration, 0, 1) : 0;
-      if (afterHit && this._caught && hitP >= .97) return;
-      const returning = afterHit && this._returnDuration > 0 && this._elapsed >= this._hitAt + this._flightDuration;
-      const returnP = returning ? clamp((this._elapsed - this._hitAt - this._flightDuration) / this._returnDuration, 0, 1) : 0;
-      const returnPosition = p => ({ x: lerp(this._target.x, 360, clamp(p, 0, 1)), y: lerp(this._target.y, 182, clamp(p, 0, 1)), height: Math.sin(clamp(p, 0, 1) * Math.PI) * 29 + (1 - clamp(p, 0, 1)) * 9 });
-      const pos = returning ? returnPosition(returnP) : afterHit ? this._hitPosition(hitP) : this._incomingPosition(this._elapsed);
-      const ctx = this.ctx;
-      // A short fading trail communicates ball speed without hiding the contact.
-      if (!this._reducedMotion) {
-        for (let i = 5; i > 0; i--) {
-          const previous = returning ? returnPosition(returnP - i * .033) : afterHit ? this._hitPosition(hitP - i * .019) : this._incomingPosition(this._elapsed - i * 17);
-          this._ellipse(previous.x, previous.y - previous.height, 2.6 - i * .31, 2.6 - i * .31, `rgba(237,240,226,${.17-i*.027})`);
+      const state=this.ballStateAt(this._elapsed);
+      if(!state.visibleCount || !state.position)return;
+      const pos=state.position,moving=['flight','hit-flight','return'].includes(state.owner);
+      if(moving && !this._reducedMotion){
+        let previous=null;
+        for(let i=4;i>=0;i--){
+          const sample=this.ballStateAt(Math.max(0,this._elapsed-i*14));
+          if(sample.owner!==state.owner || !sample.position){previous=null;continue;}
+          const point={x:sample.position.x,y:sample.position.y-sample.position.height};
+          if(previous)this._line(previous.x,previous.y,point.x,point.y,`rgba(231,237,224,${.055+(4-i)*.015})`,.8);
+          previous=point;
         }
       }
-      this._ellipse(pos.x+3,pos.y+2,3.1+pos.height*.02,1.35,`rgba(12,29,20,${.29-pos.height*.002})`);
-      const radius=afterHit && this._result.runs>=6?3.7:3.15;
+      if(moving)this._ellipse(pos.x+3,pos.y+2,3.1+pos.height*.02,1.35,`rgba(12,29,20,${.29-pos.height*.002})`);
+      let radius=state.owner==='bowler'||state.owner==='fielder'?2.15:this._result?.runs>=6?3.55:3;
+      if(state.owner==='flight')radius=2.15+.85*this._incomingPosition(this._elapsed).p;
+      if(state.owner==='hit-flight' && this._caught)radius=lerp(3,2.15,clamp(((this._elapsed-this._hitAt)/this._flightDuration-.82)/.18,0,1));
+      this._paintBall(pos,radius);
+    }
+
+    _paintBall(pos,radius) {
+      const ctx=this.ctx;
       const ballY=pos.y-pos.height;
       const leather=ctx.createRadialGradient(pos.x-1.1,ballY-1.3,.1,pos.x,ballY,radius);
       leather.addColorStop(0,'#fffdf2');leather.addColorStop(.56,'#e8e8d9');leather.addColorStop(1,'#b4bbad');
       this._ellipse(pos.x,ballY,radius,radius,leather);
       ctx.save();ctx.translate(pos.x,ballY);ctx.rotate(this._elapsed*.003);
+      ctx.beginPath();ctx.arc(0,0,radius,0,Math.PI*2);ctx.clip();
       [-.65,.65].forEach(offset=>{
         ctx.beginPath();ctx.moveTo(-1.45+offset,-2.5);ctx.bezierCurveTo(1.6+offset,-1.2,-1.5+offset,1.3,1.45+offset,2.5);ctx.strokeStyle='#9d574d';ctx.lineWidth=.4;ctx.stroke();
       });
       this._ellipse(-.9,-1.2,.55,.38,'rgba(255,255,249,.7)');ctx.restore();
-      if (afterHit && hitP < .22 && !this._bowled && !this._missed) {
-        const alpha=(1-hitP/.22)*.18;
-        for(let i=0;i<5;i++)this._ellipse(CONTACT.x+(i-2)*(1+hitP*12),CONTACT.y+hitP*8, .7,.3,`rgba(216,201,166,${alpha})`);
-      }
     }
 
     _drawOverlay() {
       const ctx = this.ctx;
-      if (!this._shot || this._elapsed < this._hitAt + 140) return;
+      const labelAt=this._caught?this._catchAt+15:this._hitAt+140;
+      if (!this._shot || this._elapsed < labelAt || (this._bowlingMode && !this.active)) return;
       const runs = this._result.runs || 0;
       const label = String(this._result.label || (this._caught ? 'CAUGHT!' : this._bowled ? 'BOWLED!' : runs === 6 ? 'SIX!' : runs === 4 ? 'FOUR!' : runs ? `${runs} RUN${runs === 1 ? '' : 'S'}` : 'DOT BALL'));
-      const t = clamp((this._elapsed - this._hitAt - 140) / 250, 0, 1);
+      const t = clamp((this._elapsed-labelAt)/(this._caught?140:250),0,1);
       ctx.save();
       ctx.globalAlpha = smooth(t);
       ctx.font = `800 ${runs >= 4 || this._result.wicket ? 22 : 16}px system-ui, sans-serif`;

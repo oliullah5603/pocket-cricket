@@ -1,7 +1,8 @@
 (function (root) {
   'use strict';
   const clone = value => JSON.parse(JSON.stringify(value));
-  const durations = { pace: 1400, spin: 1800, yorker: 1150 };
+  const durations = { pace: 1900, spin: 2250, yorker: 1750 };
+  const releases = {pace: 780, spin: 840, yorker: 740};
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
   const geometry = {width: 720, height: 380, center: {x: 360, y: 218}, contact: {x: 360, y: 280}, boundary: {rx: 304, ry: 145}};
   const fielderPositions = [
@@ -43,13 +44,20 @@
     const loft = ['Straight loft', 'Lofted cover drive', 'Lofted cut', 'Pull shot', 'Ramp shot', 'Hook shot', 'Lofted square drive', 'Lofted on drive'];
     return (power >= .72 ? loft : ground)[sector];
   }
-  function deliveryDuration(type) {
+  function bowlingOptions(options = {}) {
+    const line = options.line === undefined ? 0 : options.line, length = options.length === undefined ? .6 : options.length, speed = options.speed === undefined ? .65 : options.speed;
+    if (!Number.isFinite(line) || line < -1 || line > 1 || !Number.isFinite(length) || length < 0 || length > 1 || !Number.isFinite(speed) || speed < .25 || speed > 1) throw new Error('Invalid bowling target or power.');
+    return {line, length, speed};
+  }
+  function deliveryDuration(type, speed = .65) {
     if (!Object.hasOwn(durations, type)) throw new Error('Choose a valid delivery.');
-    return durations[type];
+    bowlingOptions({speed});
+    return Math.round(releases[type] + (durations[type] - releases[type]) * (1.52 - .8 * speed));
   }
   function resolveDelivery(delivery) {
     const {type, timing, seed} = delivery;
-    deliveryDuration(type);
+    const bowling = bowlingOptions(delivery);
+    deliveryDuration(type, bowling.speed);
     if (timing !== null && (!Number.isFinite(timing) || Math.abs(timing) > 10000)) throw new Error('Invalid swing timing.');
     if (!Number.isInteger(seed) || seed < 0 || seed > 4294967295) throw new Error('Invalid shot seed.');
     // Older saved deliveries used aim [-1,1]. New shots can point around the entire oval.
@@ -60,12 +68,12 @@
     }
     const power = delivery.power === undefined ? .8 : delivery.power;
     if (!validAngle(angle) || !validPower(power)) throw new Error('Invalid shot direction or power.');
-    const windowMs = {pace: 190, spin: 220, yorker: 160}[type];
+    const windowMs = {pace: 190, spin: 220, yorker: 160}[type] * (1.26 - .4 * bowling.speed);
     const quality = timing === null ? 0 : Math.max(0, 1 - Math.abs(timing) / windowMs);
-    const onStumps = seed % 10 < 8;
+    const onStumps = Math.abs(bowling.line) < .72 && bowling.length >= .35 && seed % 10 < 8;
     const shot = shotName(angle, power);
     const elevation = power <= .45 ? 0 : clamp((power - .45) / .55, 0, 1);
-    const base = {runs: 0, wicket: false, label: 'DOT BALL', quality, angle, power, distance: 0, elevation, shot, fielding: 'miss'};
+    const base = {runs: 0, wicket: false, label: 'DOT BALL', quality, angle, power, distance: 0, elevation, shot, fielding: 'miss', ...bowling};
     if (!quality) return {...base, wicket: onStumps, label: onStumps ? 'BOWLED!' : 'DOT BALL', elevation: 0};
     // Power gives reach; timing gives a clean strike. A perfectly timed tap remains a tap.
     const distance = clamp(power * (.25 + .9 * quality) * 1.35, 0, 1.2);
@@ -144,7 +152,7 @@
     const margin = chasing ? state.wicketLimit - state.scores[state.winner].wickets : state.scores[state.winner].runs - state.scores[1 - state.winner].runs;
     return `${state.players[state.winner]} won by ${margin} ${chasing ? 'wicket' : 'run'}${margin === 1 ? '' : 's'}!`;
   }
-  const api = {createMatch, resolveDelivery, applyDelivery, startNextInnings, deliveryDuration, resultText, fieldGeometry, boundaryPoint, fielders, shotName};
+  const api = {createMatch, resolveDelivery, applyDelivery, startNextInnings, deliveryDuration, bowlingOptions, resultText, fieldGeometry, boundaryPoint, fielders, shotName};
   root.CricketEngine = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);
