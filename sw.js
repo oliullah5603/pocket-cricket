@@ -1,5 +1,5 @@
 'use strict';
-const CACHE = 'pocket-cricket-v1';
+const CACHE = 'pocket-cricket-v4';
 const ASSETS = ['./', './index.html', './styles.css', './engine.js', './app.js', './online.js', './pitch.js', './peerjs.min.js', './icon.svg', './manifest.webmanifest'];
 self.addEventListener('install', event => { event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', event => { event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k.startsWith('pocket-cricket-') && k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim())); });

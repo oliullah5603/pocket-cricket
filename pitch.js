@@ -4,9 +4,9 @@
 
   const W = 720;
   const H = 380;
-  const CENTER = { x: 360, y: 192 };
-  const CONTACT = { x: 360, y: 268 };
-  const BOUNDARY = { rx: 310, ry: 143 };
+  const CENTER = { x: 360, y: 218 };
+  const CONTACT = { x: 360, y: 280 };
+  const BOUNDARY = { rx: 304, ry: 145 };
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
   const lerp = (a, b, t) => a + (b - a) * t;
   const ease = (t) => 1 - Math.pow(1 - clamp(t, 0, 1), 3);
@@ -28,7 +28,15 @@
       this.onSwing = callbacks.onSwing || (() => {});
       this.onFinish = callbacks.onFinish || (() => {});
       this.onProgress = callbacks.onProgress || (() => {});
+      this.onAim = callbacks.onAim || (() => {});
+      this.onCharge = callbacks.onCharge || (() => {});
       this._aim = 0;
+      this._angle = -Math.PI / 2;
+      this._power = .76;
+      this._charging = false;
+      this._pointerId = null;
+      this._paused = false;
+      this._fielders = window.CricketEngine?.fielders?.(0) || FIELDERS;
       this._delivery = null;
       this._sceneDelivery = null;
       this._shot = null;
@@ -42,25 +50,71 @@
       this._interactive = true;
       this._frameId = null;
       this._destroyed = false;
+      this._staticLayer = null;
+      this._staticKey = '';
       this._reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches || false;
       this._tick = this._tick.bind(this);
       this._resize = this._resize.bind(this);
       canvas.style.display = 'block';
       canvas.style.width = '100%';
-      canvas.style.height = 'auto';
-      canvas.style.aspectRatio = `${W} / ${H}`;
+      canvas.style.height = '100%';
+      canvas.style.aspectRatio = 'auto';
+      canvas.style.touchAction = 'none';
+      this._pointerMove = event => {
+        if (this._pointerId !== null && event.pointerId !== this._pointerId) return;
+        this._aimFromPointer(event);
+      };
+      this._pointerDown = event => {
+        if (event.button > 0 || event.isPrimary === false || !this.active || this._paused || !this._interactive || this._shot) return;
+        event.preventDefault();
+        this._aimFromPointer(event);
+        if (this.startCharge()) {
+          this._pointerId = event.pointerId;
+          try { canvas.setPointerCapture(event.pointerId); } catch (_) { /* Capture can be unavailable on synthetic events. */ }
+        }
+      };
+      this._pointerUp = event => {
+        if (this._pointerId !== event.pointerId) return;
+        event.preventDefault();
+        this._aimFromPointer(event);
+        this._releasePointer();
+        if (this._charging) this.releaseShot();
+      };
+      this._pointerCancel = event => {
+        if (this._pointerId !== event.pointerId) return;
+        this._releasePointer();
+        this._cancelCharge();
+        if (!this.active || this._paused) this._draw();
+      };
+      canvas.addEventListener?.('pointermove', this._pointerMove);
+      canvas.addEventListener?.('pointerdown', this._pointerDown);
+      canvas.addEventListener?.('pointerup', this._pointerUp);
+      canvas.addEventListener?.('pointercancel', this._pointerCancel);
       this._observer = typeof ResizeObserver === 'function' ? new ResizeObserver(this._resize) : null;
       this._observer?.observe(canvas);
+      const hudRoot = canvas.parentElement;
+      this._observer?.observe(hudRoot?.querySelector?.('.bottom-hud') || canvas);
+      this._observer?.observe(hudRoot?.querySelector?.('.score-hud') || canvas);
+      this._observer?.observe(hudRoot?.querySelector?.('.top-hud') || canvas);
       window.addEventListener('resize', this._resize);
       this._resize();
     }
 
     get active() { return this._delivery !== null; }
+    get paused() { return this._paused; }
+    get shotAim() {
+      const power = this._effectivePower();
+      return { angle: this._angle, power, shot: window.CricketEngine?.shotName?.(this._angle, power) || (power >= .72 ? 'Lofted drive' : 'Grounded drive') };
+    }
 
     startDelivery(delivery = {}, options = {}) {
       if (this._destroyed) return;
+      this._cancelCharge();
+      this._releasePointer();
+      this._paused = false;
       this._delivery = { ...delivery, type: ['pace', 'spin', 'yorker'].includes(delivery.type) ? delivery.type : 'pace' };
       this._sceneDelivery = this._delivery;
+      this._fielders = window.CricketEngine?.fielders?.(this._delivery.seed || 0) || FIELDERS;
       const engineDuration = window.CricketEngine?.deliveryDuration?.(this._delivery.type);
       this._duration = Number.isFinite(engineDuration) && engineDuration > 0 ? engineDuration : ({ pace: 1400, spin: 1800, yorker: 1150 }[this._delivery.type]);
       this._interactive = options.interactive !== false;
@@ -76,20 +130,88 @@
       this._target = null;
       this._nearestFielder = -1;
       this.onProgress(0);
+      this.onAim(this.shotAim);
       this._requestFrame();
     }
 
     setAim(aim) {
       this._aim = clamp(Number(aim) || 0, -1, 1);
-      if (!this.active) this._draw();
+      this.setShotAim({ angle: -Math.PI / 2 + this._aim * Math.PI * .78, power: this._power });
     }
 
-    swing() {
-      if (!this.active || !this._interactive || this._shot) return null;
-      const shot = { timing: performance.now() - this._start - this._duration, aim: this._aim };
+    setShotAim({ angle = this._angle, power = this._power } = {}) {
+      if (Number.isFinite(angle)) this._angle = Math.atan2(Math.sin(angle), Math.cos(angle));
+      if (Number.isFinite(power)) this._power = clamp(power, .15, 1);
+      this._aim = clamp((this._angle + Math.PI / 2) / (Math.PI * .78), -1, 1);
+      this.onAim(this.shotAim);
+      if (!this.active || this._paused) this._draw();
+    }
+
+    clientToLogical(clientX, clientY) {
+      const rect = this.canvas.getBoundingClientRect?.() || { left: 0, top: 0, width: this._view.width, height: this._view.height };
+      return {
+        x: ((clientX - rect.left) * this._view.width / Math.max(1, rect.width) - this._view.offsetX) / this._view.scale,
+        y: ((clientY - rect.top) * this._view.height / Math.max(1, rect.height) - this._view.offsetY) / this._view.scale,
+      };
+    }
+
+    _aimFromPointer(event) {
+      const point = this.clientToLogical(event.clientX, event.clientY);
+      const dx = point.x - CONTACT.x, dy = point.y - CONTACT.y;
+      if (Math.hypot(dx, dy) < 5) return;
+      const angle = Math.atan2(dy, dx);
+      const boundary = this._boundaryPoint(angle, 1);
+      const distance = Math.hypot(boundary.x - CONTACT.x, boundary.y - CONTACT.y);
+      this.setShotAim({ angle, power: clamp(Math.hypot(dx, dy) / distance, .15, 1) });
+    }
+
+    _effectivePower() {
+      const now = this._paused ? this._pauseAt : performance.now();
+      return clamp(this._power + (this._charging ? clamp((now - this._chargeAt) / 600, 0, 1) * .2 : 0), .15, 1);
+    }
+
+    startCharge() {
+      if (!this.active || this._paused || !this._interactive || this._shot || this._charging) return false;
+      this._charging = true;
+      this._chargeAt = performance.now();
+      this.onCharge({ power: this._effectivePower(), charging: true });
+      this._requestFrame();
+      return true;
+    }
+
+    _cancelCharge() {
+      const charging = this._charging;
+      this._charging = false;
+      if (charging) this.onCharge({ power: this._power, charging: false });
+    }
+
+    cancelCharge() {
+      this._cancelCharge();
+      this._releasePointer();
+      if (!this.active || this._paused) this._draw();
+    }
+
+    _releasePointer() {
+      if (this._pointerId === null) return;
+      try { this.canvas.releasePointerCapture?.(this._pointerId); } catch (_) { /* The browser may already have released it. */ }
+      this._pointerId = null;
+    }
+
+    releaseShot() {
+      if (!this.active || this._paused || !this._interactive || this._shot) {
+        this._cancelCharge();
+        return null;
+      }
+      const shot = { timing: performance.now() - this._start - this._duration, angle: this._angle, power: this._effectivePower(), aim: this._aim };
+      this._cancelCharge();
+      this._releasePointer();
       this._setShot(shot);
       this.onSwing({ ...shot });
       return shot;
+    }
+
+    swing() {
+      return this.releaseShot();
     }
 
     // CPU and remote shots are scheduled against this delivery's local clock.
@@ -99,8 +221,11 @@
     }
 
     reset() {
+      this._cancelCharge();
+      this._releasePointer();
       if (this._frameId !== null) cancelAnimationFrame(this._frameId);
       this._frameId = null;
+      this._paused = false;
       this._delivery = null;
       this._sceneDelivery = null;
       this._shot = null;
@@ -114,64 +239,107 @@
       this._draw();
     }
 
+    pause() {
+      if (this._paused || !this.active) return;
+      this._pauseAt = performance.now();
+      this._elapsed = this._pauseAt - this._start;
+      this._paused = true;
+      this._cancelCharge();
+      this._releasePointer();
+      if (this._frameId !== null) cancelAnimationFrame(this._frameId);
+      this._frameId = null;
+      this._draw();
+    }
+
+    resume() {
+      if (!this._paused) return;
+      this._start += performance.now() - this._pauseAt;
+      this._paused = false;
+      if (this.active) this._requestFrame();
+    }
+
     destroy() {
       this.reset();
       this._destroyed = true;
       this._observer?.disconnect();
       window.removeEventListener('resize', this._resize);
+      this.canvas.removeEventListener?.('pointermove', this._pointerMove);
+      this.canvas.removeEventListener?.('pointerdown', this._pointerDown);
+      this.canvas.removeEventListener?.('pointerup', this._pointerUp);
+      this.canvas.removeEventListener?.('pointercancel', this._pointerCancel);
     }
 
     _resize() {
       const width = Math.max(1, this.canvas.clientWidth || W);
-      const dpr = Math.min(window.devicePixelRatio || 1, 3);
+      const height = Math.max(1, this.canvas.clientHeight || width * H / W);
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
       this.canvas.width = Math.round(width * dpr);
-      this.canvas.height = Math.round(width * H / W * dpr);
-      this._scale = this.canvas.width / W;
+      this.canvas.height = Math.round(height * dpr);
+      const canvasRect = this.canvas.getBoundingClientRect?.() || { top: 0 };
+      const hudRoot = this.canvas.parentElement;
+      const controlsRect = hudRoot?.querySelector?.('.bottom-hud')?.getBoundingClientRect?.();
+      const scoreRect = hudRoot?.querySelector?.('.score-hud')?.getBoundingClientRect?.();
+      const headerRect = hudRoot?.querySelector?.('.top-hud')?.getBoundingClientRect?.();
+      const controlsTop = controlsRect && controlsRect.height > 0 ? controlsRect.top - canvasRect.top : height;
+      const hasControls = controlsTop > 0 && controlsTop < height;
+      const hudBottom=Math.max(scoreRect?.height>0 ? scoreRect.bottom-canvasRect.top : 0,headerRect?.height>0 ? headerRect.bottom-canvasRect.top : 0);
+      const sceneTop = hasControls ? Math.max(12,hudBottom+10) : 0;
+      const sceneBottom = hasControls ? Math.max(sceneTop + 30, controlsTop - 14) : height;
+      const fieldTop=hasControls?73:0,fieldBottom=hasControls?363:H;
+      const scale = Math.min((width - (hasControls ? 16 : 0)) / W, (sceneBottom - sceneTop) / (fieldBottom-fieldTop));
+      this._view = { width, height, dpr, scale, sceneTop, sceneBottom, offsetX: (width - W * scale) / 2, offsetY: sceneTop + (sceneBottom - sceneTop - (fieldBottom-fieldTop) * scale) / 2-fieldTop*scale };
+      this._buildStaticLayer();
       this._draw();
     }
 
     _requestFrame() {
-      if (!this._destroyed && this._frameId === null) this._frameId = requestAnimationFrame(this._tick);
+      if (!this._destroyed && !this._paused && this._frameId === null) this._frameId = requestAnimationFrame(this._tick);
     }
 
     _setShot(input) {
-      this._shot = {
+      const shot = {
         timing: typeof input.timing === 'number' && Number.isFinite(input.timing) ? input.timing : null,
         aim: clamp(Number(input.aim) || 0, -1, 1),
+        angle: Number.isFinite(input.angle) ? Math.atan2(Math.sin(input.angle), Math.cos(input.angle)) : -Math.PI / 2 + clamp(Number(input.aim) || 0, -1, 1) * Math.PI * .78,
+        power: Number.isFinite(input.power) ? clamp(input.power, .15, 1) : .76,
       };
+      const result = window.CricketEngine.resolveDelivery({ ...this._delivery, ...shot });
+      this._shot = shot;
+      this._result = result;
       this._aim = this._shot.aim;
+      this._angle = this._shot.angle;
+      this._power = this._shot.power;
       this._swingAt = this._shot.timing === null ? Infinity : this._duration + clamp(this._shot.timing, -this._duration, 400);
-      try {
-        this._result = window.CricketEngine.resolveDelivery({ ...this._delivery, ...this._shot });
-      } catch (error) {
-        // Keep the field usable if it is previewed without the scoring script.
-        const errorMs = this._shot.timing === null ? Infinity : Math.abs(this._shot.timing);
-        this._result = errorMs > 180 ? { runs: 0, wicket: true, quality: 0, label: 'Bowled' } : { runs: errorMs < 50 ? 6 : errorMs < 100 ? 4 : 1, wicket: false, quality: 1 - errorMs / 200, label: 'Shot' };
-      }
       this._result = this._result || { runs: 0, wicket: false, quality: 0, label: 'Dot ball' };
-      this._caught = Boolean(this._result.wicket && /caught/i.test(this._result.label || ''));
+      this._caught = this._result.fielding === 'caught' || Boolean(this._result.wicket && /caught/i.test(this._result.label || ''));
       this._bowled = Boolean(this._result.wicket && !this._caught);
       this._missed = this._shot.timing === null || this._result.quality === 0;
       this._hitAt = Math.max(this._duration + 50, this._swingAt === Infinity ? 0 : this._swingAt + 35);
-      this._flightDuration = this._bowled ? 590 : this._result.runs >= 4 ? 730 : 660;
-      this._finishAt = this._hitAt + this._flightDuration + 80;
-      this._target = this._shotTarget(this._shot.aim, this._result);
+      this._flightDuration = this._bowled || this._missed ? 650 : Math.round(950 + clamp(this._result.distance || 0, 0, 1.4) * 400 + (this._result.elevation || 0) * 300);
+      this._returnDuration = this._caught || this._bowled || this._missed || this._result.runs >= 4 ? 0 : 460;
+      this._finishAt = this._hitAt + this._flightDuration + this._returnDuration + 160;
+      this._target = this._shotTarget(this._result);
       let best = Infinity;
-      FIELDERS.forEach((fielder, index) => {
+      this._fielders.forEach((fielder, index) => {
         const distance = Math.hypot(fielder.x - this._target.x, fielder.y - this._target.y);
         if (distance < best) { best = distance; this._nearestFielder = index; }
       });
+      if (Number.isInteger(result.fielderIndex) && result.fielderIndex >= 0 && result.fielderIndex < this._fielders.length) this._nearestFielder = result.fielderIndex;
+      this.onAim(this.shotAim);
       this._requestFrame();
       return this._result;
     }
 
     _tick(now) {
       this._frameId = null;
-      if (!this.active || this._destroyed) return;
+      if (!this.active || this._destroyed || this._paused) return;
       this._elapsed = now - this._start;
       this.onProgress(clamp(this._elapsed / this._duration, 0, 1));
+      if (this._charging) this.onCharge({ power: this._effectivePower(), charging: true });
       if (!this._shot && this._interactive && this._elapsed >= this._duration + 220) {
-        const shot = { timing: null, aim: this._aim };
+        const shot = { timing: null, aim: this._aim, angle: this._angle, power: this._effectivePower() };
+        this._cancelCharge();
+        this._releasePointer();
         this._setShot(shot);
         this.onSwing({ ...shot });
       }
@@ -189,10 +357,14 @@
       if (this.active) this._requestFrame();
     }
 
-    _shotTarget(aim, result) {
-      if (result.wicket && !/caught/i.test(result.label || '')) return { x: 362, y: 287 };
-      if (result.quality === 0) return { x: 360, y: 303 };
-      const angle = -Math.PI / 2 + aim * Math.PI * 0.78;
+    _shotTarget(result) {
+      if (this._bowled) return { x: 362, y: 303 };
+      if (this._missed) return { x: 360, y: 328 };
+      return this._boundaryPoint(Number.isFinite(result.angle) ? result.angle : this._shot.angle, Number.isFinite(result.distance) ? result.distance : .3);
+    }
+
+    _boundaryPoint(angle, factor = 1) {
+      if (window.CricketEngine?.boundaryPoint) return window.CricketEngine.boundaryPoint(angle, factor);
       const dx = Math.cos(angle);
       const dy = Math.sin(angle);
       // Intersect the shot ray with the elliptical boundary.
@@ -202,7 +374,6 @@
       const b = 2 * (ox * dx / (BOUNDARY.rx ** 2) + oy * dy / (BOUNDARY.ry ** 2));
       const c = ox * ox / (BOUNDARY.rx ** 2) + oy * oy / (BOUNDARY.ry ** 2) - 1;
       const distance = (-b + Math.sqrt(Math.max(0, b * b - 4 * a * c))) / (2 * a);
-      const factor = result.wicket ? .57 : result.runs >= 6 ? 1.025 : result.runs === 4 ? 0.995 : result.runs === 3 ? 0.77 : result.runs === 2 ? 0.60 : result.runs === 1 ? 0.39 : 0.17;
       return { x: CONTACT.x + dx * distance * factor, y: CONTACT.y + dy * distance * factor };
     }
 
@@ -213,15 +384,16 @@
       const curve = type === 'spin' ? Math.sin(p * Math.PI) * 19 * side : Math.sin(p * Math.PI) * 3 * side;
       const bounce = type === 'yorker' ? 0.91 : 0.68;
       const height = p < bounce ? Math.sin(p / bounce * Math.PI) * 15 : Math.sin((p - bounce) / (1 - bounce) * Math.PI) * (type === 'yorker' ? 3 : 8);
-      return { x: 360 + curve, y: lerp(134, CONTACT.y, p), height, p };
+      return { x: 360 + curve, y: lerp(153, CONTACT.y, p), height, p };
     }
 
     _hitPosition(progress) {
       const p = clamp(progress, 0, 1);
       if (this._bowled || this._missed) return { x: lerp(CONTACT.x, this._target.x, p), y: lerp(CONTACT.y, this._target.y, p), height: Math.sin(p * Math.PI) * 4 };
-      const curve = this._shot.aim * Math.sin(p * Math.PI) * (this._result.runs >= 4 ? 13 : 5);
-      const height = Math.sin(p * Math.PI) * (this._caught ? 36 : this._result.runs >= 6 ? 65 : this._result.runs >= 4 ? 20 : 8);
-      return { x: lerp(CONTACT.x, this._target.x, ease(p)) + curve, y: lerp(CONTACT.y, this._target.y, ease(p)), height };
+      const elevation = clamp(Number(this._result.elevation) || 0, 0, 1);
+      const travel = elevation > .35 ? smooth(p) : ease(p);
+      const height = elevation > .18 ? Math.sin(p * Math.PI) * (16 + elevation * 100) + (this._caught ? smooth(p) * 12 : 0) : Math.max(0, Math.sin(p * Math.PI * 5)) * (1 - p) * 5;
+      return { x: lerp(CONTACT.x, this._target.x, travel), y: lerp(CONTACT.y, this._target.y, travel), height };
     }
 
     _ellipse(x, y, rx, ry, color, stroke, width = 1) {
@@ -242,17 +414,60 @@
       ctx.stroke();
     }
 
-    _draw() {
-      if (!this.ctx) return;
+    _drawBackdrop() {
       const ctx = this.ctx;
-      ctx.setTransform(this._scale || 1, 0, 0, this._scale || 1, 0, 0);
-      ctx.clearRect(0, 0, W, H);
+      const view = this._view;
+      ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
+      const backdrop = ctx.createLinearGradient(0, 0, 0, view.height);
+      backdrop.addColorStop(0, '#252c38'); backdrop.addColorStop(.32, '#263e38'); backdrop.addColorStop(1, '#102b29');
+      ctx.fillStyle = backdrop;
+      ctx.fillRect(0, 0, view.width, view.height);
+      const ambience = ctx.createRadialGradient(view.width * .5, view.offsetY + 215 * view.scale, 1, view.width * .5, view.offsetY + 215 * view.scale, Math.max(view.width, view.height) * .64);
+      ambience.addColorStop(0, 'rgba(177,190,136,.12)'); ambience.addColorStop(1, 'rgba(8,24,25,0)');
+      ctx.fillStyle = ambience; ctx.fillRect(0, 0, view.width, view.height);
+    }
+
+    _buildStaticLayer() {
+      if (typeof document === 'undefined' || !document.createElement) return;
+      const view = this._view;
+      const key = [this.canvas.width, this.canvas.height, view.scale, view.offsetX, view.offsetY].join(':');
+      if (this._staticLayer && this._staticKey === key) return;
+      const layer = document.createElement('canvas');
+      layer.width = this.canvas.width; layer.height = this.canvas.height;
+      const context = layer.getContext('2d');
+      if (!context) return;
+      const current = this.ctx;
+      this.ctx = context;
+      try {
+        this._drawBackdrop();
+        context.setTransform(view.dpr * view.scale, 0, 0, view.dpr * view.scale, view.offsetX * view.dpr, view.offsetY * view.dpr);
+        context.lineCap = 'round'; context.lineJoin = 'round';
+        this._drawStadium();
+        this._drawGrass();
+        this._drawPitchSurface();
+        this._staticLayer = layer;
+        this._staticKey = key;
+      } finally { this.ctx = current; }
+    }
+
+    _draw() {
+      if (!this.ctx || !this._view) return;
+      const ctx = this.ctx;
+      const view = this._view;
+      if (this._staticLayer) {
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.drawImage(this._staticLayer, 0, 0);
+      } else this._drawBackdrop();
+      ctx.setTransform(view.dpr * view.scale, 0, 0, view.dpr * view.scale, view.offsetX * view.dpr, view.offsetY * view.dpr);
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
-      this._drawStadium();
-      this._drawGrass();
-      this._drawAim();
+      if (!this._staticLayer) {
+        this._drawStadium();
+        this._drawGrass();
+        this._drawPitchSurface();
+      }
       this._drawPitch();
+      this._drawAim();
       this._drawFielders();
       this._drawPlayers();
       if (this._sceneDelivery) this._drawBall();
@@ -261,115 +476,176 @@
 
     _drawStadium() {
       const ctx = this.ctx;
-      const bg = ctx.createLinearGradient(0, 0, 0, H);
-      bg.addColorStop(0, '#102e2d');
-      bg.addColorStop(1, '#061f21');
-      ctx.fillStyle = bg;
-      ctx.fillRect(0, 0, W, H);
-      this._ellipse(360, 193, 341, 166, '#193c39', '#32544c', 1);
-      // Curved terraces, with the alternating seat colors of a small stadium.
-      for (let row = 0; row < 5; row++) {
-        const rx = 321 + row * 4;
-        const ry = 151 + row * 3;
-        for (let i = 0; i < 90; i++) {
-          const angle = Math.PI * 2 * i / 90;
+      this._ellipse(362, 224, 347, 175, 'rgba(2,14,17,.4)');
+      const terrace = ctx.createLinearGradient(0,47,0,389);
+      terrace.addColorStop(0,'#404951'); terrace.addColorStop(.52,'#263434'); terrace.addColorStop(1,'#313b3a');
+      this._ellipse(CENTER.x, CENTER.y, 340, 171, terrace, '#5b625f', .8);
+      this._ellipse(CENTER.x, CENTER.y, 332, 166, '#273436', '#74776b', .7);
+      for (let row = 0; row < 10; row++) {
+        const rx = 312 + row * 2.6;
+        const ry = 152 + row * 1.7;
+        this._ellipse(CENTER.x,CENTER.y,rx,ry,null,'rgba(142,154,144,.17)',.5);
+        for (let i = 0; i < 180; i++) {
+          const angle = Math.PI * 2 * i / 180 + (row % 2) * .010;
           const x = CENTER.x + Math.cos(angle) * rx;
           const y = CENTER.y + Math.sin(angle) * ry;
-          const color = i % 13 < 3 ? '#f6a455' : i % 5 === 0 ? '#c5cf9b' : row % 2 ? '#44645c' : '#62816a';
-          this._ellipse(x, y, 1.8, 1.1, color);
+          const color = i % 17 < 2 ? '#af8975' : i % 7 === 0 ? '#b5b7aa' : i % 4 === 0 ? '#537789' : row % 2 ? '#6a746b' : '#77857b';
+          this._ellipse(x, y - .4, .58, .58, i % 3 ? '#a59682' : '#756557');
+          ctx.fillStyle=color; ctx.fillRect(x-.75,y,.75+(i%2)*.5,1.05);
         }
       }
-      // Four compact floodlight towers at the edges of the ground.
-      [[51, 53], [669, 53], [44, 316], [676, 316]].forEach(([x, y]) => {
-        this._line(x, y + 2, x, y + 28, '#395451', 3);
-        ctx.fillStyle = '#234843';
-        ctx.fillRect(x - 11, y - 6, 22, 9);
-        for (let i = 0; i < 4; i++) this._ellipse(x - 7.5 + i * 5, y - 2, 1.6, 1.4, '#f5e6bc');
+      this._ellipse(CENTER.x,CENTER.y,311,151,null,'#9c9d88',.9);
+      // Signboards follow the far boundary without competing with the HUD.
+      [-2.70, -2.25, -1.58, -.91, -.44].forEach((angle, index) => {
+        const x = CENTER.x + Math.cos(angle) * 312;
+        const y = CENTER.y + Math.sin(angle) * 149;
+        ctx.save(); ctx.translate(x, y); ctx.rotate(Math.atan2(149 * Math.cos(angle), -312 * Math.sin(angle)));
+        ctx.fillStyle = index % 2 ? '#d9dcd4' : '#273f55'; ctx.fillRect(-26, -3.3, 52, 6.6);
+        ctx.fillStyle = index % 2 ? '#314c61' : '#e8ede7'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.font = '600 4.3px system-ui, sans-serif';
+        ctx.fillText(index % 2 ? 'THE NIGHT SESSION' : 'POCKET CRICKET', 0, 0); ctx.restore();
+      });
+      [[45, 80], [675, 80], [15, 250], [705, 250]].forEach(([x, y], index) => {
+        ctx.save();
+        const glow = ctx.createRadialGradient(x, y, 1, x, y, 49);
+        glow.addColorStop(0, 'rgba(232,242,237,.29)'); glow.addColorStop(1, 'rgba(232,242,237,0)');
+        ctx.fillStyle = glow; ctx.fillRect(x - 49, y - 49, 98, 98);
+        const footY = y + (index < 2 ? 58 : 47);
+        this._line(x - 2, y + 3, x - 5, footY, '#748681', 1.3);
+        this._line(x + 2, y + 3, x + 5, footY, '#748681', 1.3);
+        for (let i=1;i<4;i++) {
+          const yy=lerp(y+6,footY,i/4);
+          this._line(x-4,yy,x+4,yy+8,'#526a64',.6);
+          this._line(x+4,yy,x-4,yy+8,'#526a64',.6);
+        }
+        ctx.fillStyle = '#5b6868'; ctx.fillRect(x - 13, y - 8, 26, 12);
+        for (let i = 0; i < 12; i++) this._ellipse(x - 9 + (i % 4) * 6, y - 5.8 + Math.floor(i / 4) * 3.8, 1.55, 1.1, '#edf1e8');
+        ctx.restore();
       });
     }
 
     _drawGrass() {
       const ctx = this.ctx;
-      this._ellipse(360, 192, 317, 149, '#d8dcc0');
-      this._ellipse(360, 192, 313, 145, '#184c37');
+      this._ellipse(CENTER.x, CENTER.y, 309, 150, '#888d73');
+      this._ellipse(CENTER.x, CENTER.y, 307, 148, '#284d31');
       ctx.save();
       ctx.beginPath();
-      ctx.ellipse(360, 192, 310, 142, 0, 0, Math.PI * 2);
+      ctx.ellipse(CENTER.x, CENTER.y, BOUNDARY.rx, BOUNDARY.ry, 0, 0, Math.PI * 2);
       ctx.clip();
-      const grass = ctx.createLinearGradient(0, 49, 0, 336);
-      grass.addColorStop(0, '#316c3e');
-      grass.addColorStop(1, '#194c32');
+      const grass = ctx.createLinearGradient(0, 73, 0, 363);
+      grass.addColorStop(0, '#527345'); grass.addColorStop(.53, '#416c3a');
+      grass.addColorStop(1, '#315a34');
       ctx.fillStyle = grass;
-      ctx.fillRect(40, 45, 640, 295);
-      ctx.fillStyle = 'rgba(174, 218, 113, .07)';
-      for (let x = -260; x < W + 250; x += 56) {
+      ctx.fillRect(40, 70, 640, 298);
+      ctx.fillStyle = 'rgba(173, 195, 131, .075)';
+      for (let x = -260; x < W + 250; x += 65) {
         ctx.beginPath();
-        ctx.moveTo(x, 40); ctx.lineTo(x + 27, 40); ctx.lineTo(x + 227, 345); ctx.lineTo(x + 200, 345);
+        ctx.moveTo(x, 70); ctx.lineTo(x + 32, 70); ctx.lineTo(x + 175, 366); ctx.lineTo(x + 143, 366);
         ctx.closePath(); ctx.fill();
       }
       // Grass texture remains stable between animation frames.
-      ctx.fillStyle = 'rgba(198, 218, 123, .10)';
-      for (let i = 0; i < 290; i++) {
+      for (let i = 0; i < 3600; i++) {
         const x = 43 + ((i * 137 + 19) % 638);
-        const y = 48 + ((i * 97 + 53) % 289);
-        ctx.fillRect(x, y, .8, 1.7);
+        const y = 74 + ((i * 97 + 53) % 289);
+        ctx.fillStyle = i % 4 ? 'rgba(200,212,156,.055)' : 'rgba(20,47,28,.10)';
+        ctx.fillRect(x, y, .3 + (i % 3) * .3, .4 + (i % 2) * .4);
       }
-      ctx.setLineDash([4, 8]);
-      this._ellipse(360, 202, 197, 88, null, 'rgba(237, 243, 204, .28)', 1.1);
+      const glow = ctx.createRadialGradient(360, 215, 4, 360, 215, 270);
+      glow.addColorStop(0, 'rgba(237,237,188,.12)'); glow.addColorStop(1, 'rgba(237,237,188,0)');
+      ctx.fillStyle = glow; ctx.fillRect(45, 70, 630, 300);
+      const beam=ctx.createLinearGradient(0,80,0,330);
+      beam.addColorStop(0,'rgba(225,239,224,.08)'); beam.addColorStop(1,'rgba(225,239,224,0)');
+      ctx.fillStyle=beam;
+      [[36,80,65,80,490,360,270,306],[655,80,684,80,450,306,230,360]].forEach(points=>{
+        ctx.beginPath(); ctx.moveTo(points[0],points[1]); for(let i=2;i<points.length;i+=2)ctx.lineTo(points[i],points[i+1]); ctx.closePath();ctx.fill();
+      });
+      ctx.setLineDash([3, 7]);
+      this._ellipse(360, 228, 191, 94, null, 'rgba(227,232,210,.27)', .75);
       ctx.setLineDash([]);
       ctx.restore();
-      this._ellipse(360, 192, 309, 141, null, 'rgba(247, 241, 197, .85)', 1.4);
+      this._ellipse(CENTER.x+1, CENTER.y+1, BOUNDARY.rx, BOUNDARY.ry, null, 'rgba(17,39,22,.32)', 1.9);
+      this._ellipse(CENTER.x, CENTER.y, BOUNDARY.rx, BOUNDARY.ry, null, '#d9dbca', 1.2);
       // Small rope markers along the boundary.
       for (let i = 0; i < 32; i++) {
         const a = i * Math.PI / 16;
-        this._ellipse(360 + Math.cos(a) * 310, 192 + Math.sin(a) * 143, 1.5, .85, '#dfedb3');
+        this._ellipse(CENTER.x + Math.cos(a) * BOUNDARY.rx, CENTER.y + Math.sin(a) * BOUNDARY.ry, 1.15, .6, '#e7e7d4');
       }
     }
 
     _drawAim() {
       if (this._shot && this._elapsed >= this._hitAt) return;
       const ctx = this.ctx;
-      const target = this._shotTarget(this._aim, { runs: 4, wicket: false });
-      const angle = Math.atan2(target.y - CONTACT.y, target.x - CONTACT.x);
+      const power = this._effectivePower();
+      const angle = this._angle;
+      const target = this._boundaryPoint(angle, power);
+      const color = power >= .72 ? '#fbb562' : '#dafa8a';
+      const radius = Math.hypot(target.x - CONTACT.x, target.y - CONTACT.y);
       ctx.save();
       ctx.beginPath();
       ctx.moveTo(CONTACT.x, CONTACT.y);
-      ctx.arc(CONTACT.x, CONTACT.y, 93, angle - .11, angle + .11);
+      ctx.arc(CONTACT.x, CONTACT.y, radius, angle - .075, angle + .075);
       ctx.closePath();
-      ctx.fillStyle = 'rgba(204, 234, 102, .09)';
+      ctx.fillStyle = power >= .72 ? 'rgba(250,183,91,.10)' : 'rgba(209,241,134,.09)';
       ctx.fill();
-      ctx.setLineDash([4, 7]);
-      this._line(CONTACT.x, CONTACT.y, lerp(CONTACT.x, target.x, .87), lerp(CONTACT.y, target.y, .87), 'rgba(224, 243, 152, .32)', 1.2);
+      ctx.setLineDash([3, 6]);
+      this._line(CONTACT.x, CONTACT.y, target.x, target.y, power >= .72 ? 'rgba(251,181,98,.65)' : 'rgba(215,247,160,.65)', 1.3);
       ctx.setLineDash([]);
-      this._ellipse(target.x, target.y, 5, 3, null, 'rgba(218, 240, 143, .45)', 1);
+      this._ellipse(target.x, target.y, this._charging ? 11 : 9, this._charging ? 11 : 9, 'rgba(5,31,27,.18)', color, 1.3);
+      this._ellipse(target.x, target.y, 2, 2, color);
+      this._line(target.x - 14, target.y, target.x - 7, target.y, color, 1.2);
+      this._line(target.x + 7, target.y, target.x + 14, target.y, color, 1.2);
+      this._line(target.x, target.y - 14, target.x, target.y - 7, color, 1.2);
+      this._line(target.x, target.y + 7, target.x, target.y + 14, color, 1.2);
+      ctx.font = '700 7px system-ui, sans-serif'; ctx.fillStyle = color; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(`${Math.round(power * 100)}%`, target.x, target.y - 21);
+      if (this.active && this._interactive && Math.abs(this._elapsed - this._duration) < 180) {
+        const strength = 1 - Math.abs(this._elapsed - this._duration) / 180;
+        this._ellipse(CONTACT.x, CONTACT.y, 11 + strength * 5, 6 + strength * 3, `rgba(221,255,147,${strength * .15})`, `rgba(220,250,145,${strength * .85})`, 1.8);
+      }
       ctx.restore();
     }
 
-    _drawPitch() {
+    _drawPitchSurface() {
       const ctx = this.ctx;
       ctx.beginPath();
-      ctx.moveTo(339, 139); ctx.lineTo(381, 139); ctx.lineTo(391, 289); ctx.lineTo(329, 289);
+      ctx.moveTo(337, 154); ctx.lineTo(389, 154); ctx.lineTo(401, 310); ctx.lineTo(328, 310); ctx.closePath();
+      ctx.fillStyle = 'rgba(15,37,21,.2)'; ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(336, 152); ctx.lineTo(384, 152); ctx.lineTo(396, 306); ctx.lineTo(324, 306);
       ctx.closePath();
-      const sand = ctx.createLinearGradient(0, 140, 0, 289);
-      sand.addColorStop(0, '#bda272'); sand.addColorStop(.5, '#ceba89'); sand.addColorStop(1, '#d9c79b');
+      const sand = ctx.createLinearGradient(0, 152, 0, 306);
+      sand.addColorStop(0, '#a49171'); sand.addColorStop(.5, '#bdab86'); sand.addColorStop(1, '#cebf9b');
       ctx.fillStyle = sand; ctx.fill();
-      ctx.strokeStyle = 'rgba(17, 47, 28, .35)'; ctx.lineWidth = 2; ctx.stroke();
-      ctx.fillStyle = 'rgba(106, 80, 49, .12)';
-      for (let i = 0; i < 45; i++) ctx.fillRect(341 + ((i * 7) % 36), 142 + ((i * 23) % 140), 1.5, 2.5);
-      this._line(330, 153, 390, 153, '#fff7d8', 2);
-      this._line(328, 166, 392, 166, '#fff7d8', 1.6);
-      this._line(323, 263, 397, 263, '#fff7d8', 2.2);
-      this._line(324, 277, 396, 277, '#fff7d8', 1.8);
-      this._line(340, 153, 340, 171, '#fff7d8', 1.6);
-      this._line(380, 153, 380, 171, '#fff7d8', 1.6);
-      this._line(333, 255, 333, 278, '#fff7d8', 1.6);
-      this._line(387, 255, 387, 278, '#fff7d8', 1.6);
-      this._drawStumps(360, 153, .8, false);
-      this._drawStumps(360, 280, 1, Boolean(this._bowled && this._elapsed > this._hitAt + 110));
+      ctx.strokeStyle = 'rgba(37,55,32,.22)'; ctx.lineWidth = 1; ctx.stroke();
+      ctx.save();
+      ctx.beginPath(); ctx.moveTo(336,152); ctx.lineTo(384,152); ctx.lineTo(396,306); ctx.lineTo(324,306); ctx.closePath(); ctx.clip();
+      for (let i = 0; i < 900; i++) {
+        const x = 326 + ((i * 137 + 11) % 68), y = 153 + ((i * 97 + 21) % 153);
+        ctx.fillStyle = i % 4 ? 'rgba(93,74,47,.07)' : 'rgba(245,229,194,.14)';
+        ctx.fillRect(x, y, .8 + (i % 2) * .4, .4 + (i % 3) * .3);
+      }
+      ctx.fillStyle = 'rgba(85,73,54,.055)'; ctx.fillRect(351,171,18,121);
+      this._line(355,195,356,246,'rgba(120,96,64,.07)',1);
+      this._line(363,202,362,256,'rgba(120,96,64,.055)',1);
+      this._ellipse(348,285,7,3.7,'rgba(100,78,48,.095)');
+      this._ellipse(372,187,5,2.7,'rgba(100,78,48,.075)');
+      ctx.restore();
+      this._line(327, 174, 393, 174, '#eee9d6', 1.45);
+      this._line(326, 188, 394, 188, '#eee9d6', 1.05);
+      this._line(316, 280, 404, 280, '#f4efdd', 1.65);
+      this._line(318, 296, 402, 296, '#eee9d6', 1.3);
+      this._line(337, 174, 337, 193, '#eee9d6', 1.1);
+      this._line(383, 174, 383, 193, '#eee9d6', 1.1);
+      this._line(330, 272, 330, 297, '#f4efdd', 1.15);
+      this._line(390, 272, 390, 297, '#f4efdd', 1.15);
+    }
+
+    _drawPitch() {
+      this._drawStumps(360, 174, .85, false);
+      this._drawStumps(360, 298, 1, Boolean(this._bowled && this._elapsed > this._hitAt + 240));
       if (this.active && this._elapsed < this._hitAt) {
         const p = this._incomingPosition(this._elapsed).p;
         const bounce = this._sceneDelivery.type === 'yorker' ? .91 : .68;
-        const bounceY = lerp(134, CONTACT.y, bounce);
+        const bounceY = lerp(153, CONTACT.y, bounce);
         this._ellipse(360, bounceY, 7, 3.5, 'rgba(244, 244, 192, .08)', 'rgba(250, 240, 171, .28)', 1);
         if (p > bounce && p < bounce + .07) this._ellipse(360, bounceY, 6 + (p - bounce) * 70, 3 + (p - bounce) * 30, null, `rgba(239, 219, 156, ${.5 - (p - bounce) * 6})`, 1);
       }
@@ -379,117 +655,157 @@
       const ctx = this.ctx;
       ctx.save(); ctx.translate(x, y); ctx.scale(scale, scale);
       if (broken) {
-        const p = clamp((this._elapsed - this._hitAt - 110) / 380, 0, 1);
+        const p = clamp((this._elapsed - this._hitAt - 240) / 380, 0, 1);
         [-1, 0, 1].forEach((side, index) => {
           ctx.save(); ctx.translate(side * 4 + side * p * 10, p * (index + 1) * 4);
           ctx.rotate(side * p * 1.2 + p * .4);
-          this._line(0, 1, 0, -9, '#f7f1d0', 2.1); ctx.restore();
+          this._line(0, 1, 0, -9, '#d9c8a0', 1.45); ctx.restore();
         });
         this._line(-5 - p * 13, -11 - Math.sin(p * Math.PI) * 14, 0 - p * 13, -11 - Math.sin(p * Math.PI) * 14, '#ffb25b', 2);
         this._line(2 + p * 12, -11 - Math.sin(p * Math.PI) * 18, 6 + p * 12, -10 - Math.sin(p * Math.PI) * 18, '#ffb25b', 2);
       } else {
-        [-4, 0, 4].forEach((offset) => this._line(offset, 1, offset, -9, '#faf2cf', 2.1));
-        this._line(-5, -10, 5, -10, '#f1d990', 2);
+        [-4, 0, 4].forEach((offset) => {
+          this._line(offset+.5,2,offset+.5,-8,'rgba(38,44,25,.3)',1.8);
+          this._line(offset,1,offset,-9,'#e5d7b7',1.45);
+          this._line(offset-.3,-1,offset-.3,-8,'#f1e6cd',.35);
+        });
+        this._line(-5, -10, 5, -10, '#ddc79d', 1.2);
       }
       ctx.restore();
     }
 
     _drawFielders() {
       const hitProgress = this._shot && this._elapsed >= this._hitAt ? clamp((this._elapsed - this._hitAt) / this._flightDuration, 0, 1) : 0;
-      FIELDERS.forEach((fielder, index) => {
+      this._fielders.forEach((fielder, index) => {
         let x = fielder.x, y = fielder.y;
         if (hitProgress > 0 && !this._bowled && index === this._nearestFielder) {
-          const chase = this._result.runs >= 6 ? .25 : this._result.runs === 4 ? .66 : 1;
+          const chase = this._result.runs >= 6 ? .20 : this._result.runs === 4 ? .76 : 1;
           const movement = smooth(hitProgress) * chase;
           x = lerp(x, this._target.x, movement);
           y = lerp(y, this._target.y, movement);
         }
         const rotation = hitProgress > 0 && this._target ? Math.atan2(this._target.y - y, this._target.x - x) + Math.PI / 2 : Math.atan2(CONTACT.y - y, CONTACT.x - x) + Math.PI / 2;
         const stride = hitProgress > 0 && index === this._nearestFielder ? Math.sin(hitProgress * Math.PI * 9) * .8 : 0;
-        this._drawPlayer(x, y, y < 160 ? .96 : 1.05, rotation, '#f0924f', stride, this._caught && index === this._nearestFielder && hitProgress > .7 ? 1.4 : 0);
+        const collecting=index===this._nearestFielder && hitProgress>.76 && this._result?.runs<4;
+        const returnP=this._returnDuration ? clamp((this._elapsed-this._hitAt-this._flightDuration)/this._returnDuration,0,1) : 0;
+        this._drawPlayer(x, y, .88 + clamp((y-90)/270,0,1)*.18, rotation, '#f0924f', stride,
+          returnP>0 && index===this._nearestFielder ? Math.sin(returnP*Math.PI)*1.45 : 0,
+          {index,keeper:index===8,catch:this._caught && collecting,crouch:collecting && !this._caught ? (1-smooth(returnP))*3.8 : 0});
       });
     }
 
-    _drawPlayer(x, y, scale, facingAngle, jersey, stride = 0, arm = 0) {
+    _drawPlayer(x, y, scale, facingAngle, jersey, stride = 0, arm = 0, pose = {}) {
       const ctx = this.ctx;
       const facing = Math.sin(facingAngle) < -.01 ? -1 : 1;
-      const lift = Math.sin(arm);
-      const leftFoot = { x: -4 - stride * 1.6, y: 16 + stride * 1.6 };
-      const rightFoot = { x: 4 + stride * 1.6, y: 16 - stride * 1.6 };
-      this._ellipse(x + 1, y + 18 * scale, 9 * scale, 3.2 * scale, 'rgba(5, 29, 19, .36)');
-      // Head, torso and legs stay upright on screen, including when a fielder
-      // changes direction. Only the cap brim indicates which way they face.
+      const lift = Math.sin(arm), crouch=(pose.crouch||0)+(pose.keeper?1.6:0);
+      const skin=['#bd987b','#d3b092','#9b785e','#cda585'][(pose.index||0)%4];
+      const accent=jersey==='#f0924f'?'#304f70':'#66798a';
+      const leftKnee={x:-2.9+stride*1.2,y:12+stride*1.8};
+      const rightKnee={x:2.9-stride*1.2,y:12-stride*1.8};
+      const leftFoot={x:-3.5-stride*3.4,y:21-stride*1.7};
+      const rightFoot={x:3.5+stride*3.4,y:21+stride*1.7};
+      ctx.save(); ctx.translate(x+6*scale,y+20*scale);ctx.rotate(.32);
+      ctx.shadowColor='rgba(5,21,17,.15)';ctx.shadowBlur=2.8*scale;
+      this._ellipse(4*scale,0,12*scale,2.4*scale,'rgba(7,28,20,.17)');ctx.restore();
+      this._ellipse(x,y+21*scale,6*scale,1.4*scale,'rgba(9,29,20,.18)');
+      // Jointed limbs and a small shaded head retain natural human proportions.
+      // Facing affects the profile and cap brim; figures remain upright.
       ctx.save(); ctx.translate(x, y); ctx.scale(scale, scale);
-      this._line(-3.5, 5, leftFoot.x, leftFoot.y - 2, '#173b2d', 6.2);
-      this._line(3.5, 5, rightFoot.x, rightFoot.y - 2, '#173b2d', 6.2);
-      this._line(-3.5, 5, leftFoot.x, leftFoot.y - 2, '#fff9e4', 4.8);
-      this._line(3.5, 5, rightFoot.x, rightFoot.y - 2, '#fff9e4', 4.8);
-      this._line(leftFoot.x - 1.2, leftFoot.y, leftFoot.x + 2, leftFoot.y, '#132d27', 3.4);
-      this._line(rightFoot.x - 1, rightFoot.y, rightFoot.x + 2.3, rightFoot.y, '#132d27', 3.4);
-      this._line(-5, -5, -9, 1 + stride, jersey, 4.4);
-      this._line(-9, 1 + stride, -10, 5 + stride, '#dcac7d', 3.2);
-      this._line(5, -5, 8 + lift * 2, 1 - lift * 12, jersey, 4.4);
-      this._line(8 + lift * 2, 1 - lift * 12, 10 + lift * 2, 5 - lift * 24, '#dcac7d', 3.2);
-      this._ellipse(-10, 5 + stride, 2, 2.2, '#edc198');
-      this._ellipse(10 + lift * 2, 5 - lift * 24, 2, 2.2, '#edc198');
+      const limb=(a,b,width,cloth=true)=>{
+        const shade=ctx.createLinearGradient(a.x-width/2,a.y,b.x+width/2,b.y);
+        shade.addColorStop(0,cloth?'#f3f1e8':skin);shade.addColorStop(.45,cloth?'#e1e3da':skin);shade.addColorStop(1,cloth?'#aeb9b1':'#8e715b');
+        this._line(a.x,a.y,b.x,b.y,shade,width);
+      };
+      limb({x:-2.5,y:4+crouch},leftKnee,3.35);limb(leftKnee,{x:leftFoot.x,y:leftFoot.y-1.7},2.85);
+      limb({x:2.5,y:4+crouch},rightKnee,3.35);limb(rightKnee,{x:rightFoot.x,y:rightFoot.y-1.7},2.85);
+      this._line(leftFoot.x-1,leftFoot.y,leftFoot.x+2.2,leftFoot.y,'#c7ceca',2.5);
+      this._line(rightFoot.x-1,rightFoot.y,rightFoot.x+2.2,rightFoot.y,'#c7ceca',2.5);
+      this._line(leftFoot.x-1,leftFoot.y+.8,leftFoot.x+2.4,leftFoot.y+.8,'#4c5d59',.65);
+      this._line(rightFoot.x-1,rightFoot.y+.8,rightFoot.x+2.4,rightFoot.y+.8,'#4c5d59',.65);
+      if(pose.batter){
+        [[leftKnee,leftFoot],[rightKnee,rightFoot]].forEach(([knee,foot])=>{
+          limb({x:knee.x,y:knee.y-1},{x:foot.x,y:foot.y-2.2},3.8);
+          for(let i=0;i<3;i++){
+            const t=(i+1)/4,px=lerp(knee.x,foot.x,t),py=lerp(knee.y,foot.y-2,t);
+            this._line(px-1.5,py,px+1.5,py,'rgba(100,116,110,.26)',.45);
+          }
+        });
+      }
+      const shoulderY=-7+crouch;
+      const leftElbow={x:pose.batter?-5:-7.1,y:pose.catch?-4:pose.batter?-1:1+crouch-stride*1.5};
+      const rightElbow={x:pose.batter?5:7.2-lift*1.7,y:pose.catch?-4:pose.batter?-1:1+crouch-lift*16+stride*1.5};
+      const leftHand=pose.catch?{x:-2.4,y:-11.5}:pose.batter?{x:2,y:-4}:{x:-7.7,y:6.7+crouch-stride*2};
+      const rightHand=pose.catch?{x:2.4,y:-11.5}:pose.batter?{x:4,y:-4}:{x:7.7-lift*5,y:6.7+crouch-lift*34+stride*2};
+      if(pose.keeper && !pose.catch){leftHand.x=-4.8;rightHand.x=4.8;leftHand.y=6+crouch;rightHand.y=6+crouch;}
+      limb({x:-4.6,y:shoulderY},leftElbow,2.8);limb(leftElbow,leftHand,2.05,false);
+      limb({x:4.6,y:shoulderY},rightElbow,2.8);limb(rightElbow,rightHand,2.05,false);
+      const shirt=ctx.createLinearGradient(-5,-7,6,5);
+      shirt.addColorStop(0,'#f0f1e9');shirt.addColorStop(.38,'#e8ebe3');shirt.addColorStop(1,'#a5b6ad');
       ctx.beginPath();
-      ctx.moveTo(-6, -8); ctx.lineTo(6, -8); ctx.lineTo(7, 6);
-      ctx.quadraticCurveTo(0, 9, -7, 6); ctx.closePath();
-      ctx.fillStyle = jersey; ctx.fill();
-      ctx.strokeStyle = 'rgba(13, 43, 31, .55)'; ctx.lineWidth = .9; ctx.stroke();
-      this._line(-6, 5, 6, 5, jersey === '#f0924f' ? '#ffd995' : '#9ead88', 1.4);
-      this._line(-2.5, -7, 0, -4, '#fff4d9', 1.7);
-      this._line(0, -4, 2.5, -7, '#fff4d9', 1.7);
-      this._ellipse(3, -2, 1.1, 1.2, jersey === '#f0924f' ? '#fff6db' : '#e88946');
-      this._line(0, -8, 0, -11, '#d9a77a', 3.7);
-      this._ellipse(0, -14.5, 5, 5.1, '#edc198', '#754e37', .7);
-      this._ellipse(-1.7, -14, .6, .7, '#24352c');
-      this._ellipse(1.7, -14, .6, .7, '#24352c');
-      this._line(-1, -11.9, 1, -11.9, '#995d43', .7);
-      this._ellipse(0, -18, 5.5, 3.1, '#174236');
-      this._line(-4, -18.3, 4, -18.3, jersey === '#f0924f' ? '#ffc77c' : '#bacaa5', 1);
-      this._line(facing * 2, -16.9, facing * 7, -16.9, '#10382b', 2.4);
+      ctx.moveTo(-4.8,shoulderY);ctx.quadraticCurveTo(-6,-5+crouch,-4.5,3+crouch);
+      ctx.lineTo(-3.8,6+crouch);ctx.quadraticCurveTo(0,6.8+crouch,3.8,6+crouch);
+      ctx.lineTo(4.5,3+crouch);ctx.quadraticCurveTo(6,-5+crouch,4.8,shoulderY);ctx.closePath();ctx.fillStyle=shirt;ctx.fill();
+      this._line(-4.8,shoulderY,-5.2,-2+crouch,accent,.85);
+      this._line(4.8,shoulderY,5.2,-2+crouch,accent,.85);
+      this._line(-1.8,-7+crouch,0,-5.6+crouch,'#a6b4ae',.6);this._line(0,-5.6+crouch,1.8,-7+crouch,'#a6b4ae',.6);
+      this._line(-3.8,5.8+crouch,3.8,5.8+crouch,'#748d85',.6);
+      this._line(1.4,-3+crouch,1.8,3.8+crouch,'rgba(118,136,127,.23)',.5);
+      this._ellipse(2.7,-3.8+crouch,.65,.9,accent);
+      this._line(0,-8+crouch,0,-12+crouch,skin,2.15);
+      const face=ctx.createLinearGradient(-3,-15,3,-12);face.addColorStop(0,skin);face.addColorStop(1,'#8c705a');
+      this._ellipse(facing*.35,-15+crouch,2.85,3.55,face);
+      const cap=ctx.createLinearGradient(-3,-19,4,-14);cap.addColorStop(0,'#38526d');cap.addColorStop(1,'#142c45');
+      if(pose.batter){
+        this._ellipse(0,-17+crouch,3.55,2.9,cap);
+        this._line(facing*2.4,-15.4+crouch,facing*5.5,-14.8+crouch,'#142b41',1.05);
+        this._line(facing*5.4,-14.5+crouch,facing*5.2,-10.8+crouch,'#7e9196',.5);
+        this._line(facing*2.1,-12.6+crouch,facing*5.3,-12.6+crouch,'#879b9d',.45);
+        this._line(facing*1.7,-10.9+crouch,facing*5.2,-10.9+crouch,'#879b9d',.45);
+      } else {
+        this._ellipse(0,-17.6+crouch,3.15,1.7,cap);
+        this._line(facing*1.1,-16.9+crouch,facing*4.8,-16.8+crouch,'#213c56',1);
+      }
+      const gloves=pose.batter||pose.keeper||pose.catch;
+      this._ellipse(leftHand.x,leftHand.y,gloves?1.55:1.0,gloves?1.8:1.15,gloves?'#e9e9df':skin);
+      this._ellipse(rightHand.x,rightHand.y,gloves?1.55:1.0,gloves?1.8:1.15,gloves?'#e9e9df':skin);
+      if(gloves){this._line(leftHand.x-1,leftHand.y+.5,leftHand.x+1,leftHand.y+.5,'#829a9d',.5);this._line(rightHand.x-1,rightHand.y+.5,rightHand.x+1,rightHand.y+.5,'#829a9d',.5);}
       ctx.restore();
     }
 
     _drawPlayers() {
       const deliveryProgress = this._sceneDelivery ? clamp(this._elapsed / 230, 0, 1) : 0;
-      const bowlerY = this.active ? lerp(112, 124, smooth(deliveryProgress)) : 124;
+      const bowlerY = this.active ? lerp(127, 145, smooth(deliveryProgress)) : 145;
       const bowlerArm = this.active && this._elapsed < 280 ? Math.sin(deliveryProgress * Math.PI) * 1.45 : 0;
-      this._drawPlayer(361, bowlerY, 1.02, Math.PI, '#f0924f', this.active && this._elapsed < 210 ? Math.sin(deliveryProgress * 8) * .4 : 0, bowlerArm);
+      this._drawPlayer(361, bowlerY, 1.02, Math.PI, '#f0924f', this.active && this._elapsed < 210 ? Math.sin(deliveryProgress * 8) * .4 : 0, bowlerArm,{index:2});
       const hitProgress = this._shot && this._elapsed >= this._hitAt ? clamp((this._elapsed - this._hitAt) / this._flightDuration, 0, 1) : 0;
       const running = hitProgress > 0 && !this._result.wicket && this._result.runs > 0 && this._result.runs < 4;
       const runP = running ? .5 - Math.cos(hitProgress * Math.PI * Math.min(this._result.runs, 3)) * .5 : 0;
-      const batterY = running ? lerp(276, 165, runP) : 276;
-      const partnerY = running ? lerp(161, 272, runP) : 161;
-      this._drawPlayer(374, partnerY, .94, running && Math.sin(hitProgress * Math.PI * this._result.runs) < 0 ? 0 : Math.PI, '#f7efce', running ? Math.sin(hitProgress * 30) : 0);
-      this._drawPlayer(347, batterY, 1.08, 0, '#f7efce', running ? Math.sin(hitProgress * 30) : 0);
+      const batterY = running ? lerp(288, 188, runP) : 288;
+      const partnerY = running ? lerp(188, 288, runP) : 188;
+      this._drawPlayer(374, partnerY, .94, running && Math.sin(hitProgress * Math.PI * this._result.runs) < 0 ? 0 : Math.PI, '#f7efce', running ? Math.sin(hitProgress * 30) : 0,0,{index:1,batter:true});
+      this._drawPlayer(347, batterY, 1.08, 0, '#f7efce', running ? Math.sin(hitProgress * 30) : 0,0,{index:3,batter:true});
       const ctx = this.ctx;
       ctx.save(); ctx.translate(347, batterY - 5);
       let batAngle = -1.05;
       if (this._shot && this._swingAt !== Infinity) {
         const swingP = clamp((this._elapsed - this._swingAt) / 290, 0, 1);
-        if (this._elapsed >= this._swingAt) batAngle = lerp(-1.6, 1.4, ease(swingP));
+        if (this._elapsed >= this._swingAt) {
+          const strike = ease(clamp(swingP / .4, 0, 1));
+          const follow = ease(clamp((swingP - .4) / .6, 0, 1));
+          batAngle = swingP < .4 ? lerp(-1.65, -.28, strike) : lerp(-.28, this._shot.angle, follow);
+        }
       }
       if (running) batAngle = .8;
       ctx.rotate(batAngle);
-      this._line(0, 0, 13, 0, '#8e6e45', 2.3);
-      this._line(12, 0, 30, 0, '#e8c784', 5.8);
-      this._line(15, -1, 28, -1, '#f9e4ae', 1.2);
-      this._ellipse(1, 0, 2.2, 2.2, '#fff4d8');
+      this._line(0,0,10,0,'#33463f',1.7);
+      const willow=ctx.createLinearGradient(9,-2,27,2);
+      willow.addColorStop(0,'#d3c39e');willow.addColorStop(.45,'#e0d3b4');willow.addColorStop(1,'#ae9872');
+      ctx.beginPath();ctx.moveTo(9,-1.4);ctx.lineTo(14,-2.1);ctx.lineTo(28,-1.7);ctx.quadraticCurveTo(30,0,28,1.7);ctx.lineTo(14,2.1);ctx.lineTo(9,1.4);ctx.closePath();ctx.fillStyle=willow;ctx.fill();
+      this._line(14,-.8,27,-.5,'rgba(245,236,207,.55)',.5);
+      this._line(15,-1.5,15,1.5,'#5d7782',.7);
+      this._line(17,-1.5,17,1.5,'#7e969c',.55);
+      this._ellipse(2,-.2,1.65,1.8,'#ecede3');
       ctx.restore();
-      // The batter's helmet and pads are clearer than a generic fielding sprite.
-      this._ellipse(347, batterY - 19, 6, 3.8, '#173f35');
-      this._line(352, batterY - 17, 353, batterY - 11, '#b6c7a1', 1.1);
-      this._line(348, batterY - 11, 353, batterY - 11, '#b6c7a1', 1);
-      if (!running) {
-        this._line(342, batterY + 6, 342, batterY + 15, '#fff7de', 5.2);
-        this._line(351, batterY + 6, 351, batterY + 15, '#fff7de', 5.2);
-        [8, 11, 14].forEach(offset => {
-          this._line(340, batterY + offset, 344, batterY + offset, '#d9dcc0', .7);
-          this._line(349, batterY + offset, 353, batterY + offset, '#d9dcc0', .7);
-        });
-      }
     }
 
     _drawBall() {
@@ -497,41 +813,37 @@
       const afterHit = this._shot && this._elapsed >= this._hitAt;
       const hitP = afterHit ? clamp((this._elapsed - this._hitAt) / this._flightDuration, 0, 1) : 0;
       if (afterHit && this._caught && hitP >= .97) return;
-      const pos = afterHit ? this._hitPosition(hitP) : this._incomingPosition(this._elapsed);
+      const returning = afterHit && this._returnDuration > 0 && this._elapsed >= this._hitAt + this._flightDuration;
+      const returnP = returning ? clamp((this._elapsed - this._hitAt - this._flightDuration) / this._returnDuration, 0, 1) : 0;
+      const returnPosition = p => ({ x: lerp(this._target.x, 360, clamp(p, 0, 1)), y: lerp(this._target.y, 182, clamp(p, 0, 1)), height: Math.sin(clamp(p, 0, 1) * Math.PI) * 29 + (1 - clamp(p, 0, 1)) * 9 });
+      const pos = returning ? returnPosition(returnP) : afterHit ? this._hitPosition(hitP) : this._incomingPosition(this._elapsed);
       const ctx = this.ctx;
       // A short fading trail communicates ball speed without hiding the contact.
       if (!this._reducedMotion) {
-        for (let i = 4; i > 0; i--) {
-          const previous = afterHit ? this._hitPosition(hitP - i * .027) : this._incomingPosition(this._elapsed - i * 19);
-          this._ellipse(previous.x, previous.y - previous.height, 2.6 - i * .25, 2.6 - i * .25, `rgba(255, 234, 188, ${.2 - i * .033})`);
+        for (let i = 5; i > 0; i--) {
+          const previous = returning ? returnPosition(returnP - i * .033) : afterHit ? this._hitPosition(hitP - i * .019) : this._incomingPosition(this._elapsed - i * 17);
+          this._ellipse(previous.x, previous.y - previous.height, 2.6 - i * .31, 2.6 - i * .31, `rgba(237,240,226,${.17-i*.027})`);
         }
       }
-      this._ellipse(pos.x + 1, pos.y + 2, 3.7 + pos.height * .025, 1.8, `rgba(5, 28, 17, ${.33 - pos.height * .003})`);
-      this._ellipse(pos.x, pos.y - pos.height, afterHit && this._result.runs >= 6 ? 3.8 : 3.3, afterHit && this._result.runs >= 6 ? 3.8 : 3.3, '#ffefd6', '#f08045', .9);
-      this._line(pos.x - 1, pos.y - pos.height - 2, pos.x + 1, pos.y - pos.height + 2, '#d97441', .7);
+      this._ellipse(pos.x+3,pos.y+2,3.1+pos.height*.02,1.35,`rgba(12,29,20,${.29-pos.height*.002})`);
+      const radius=afterHit && this._result.runs>=6?3.7:3.15;
+      const ballY=pos.y-pos.height;
+      const leather=ctx.createRadialGradient(pos.x-1.1,ballY-1.3,.1,pos.x,ballY,radius);
+      leather.addColorStop(0,'#fffdf2');leather.addColorStop(.56,'#e8e8d9');leather.addColorStop(1,'#b4bbad');
+      this._ellipse(pos.x,ballY,radius,radius,leather);
+      ctx.save();ctx.translate(pos.x,ballY);ctx.rotate(this._elapsed*.003);
+      [-.65,.65].forEach(offset=>{
+        ctx.beginPath();ctx.moveTo(-1.45+offset,-2.5);ctx.bezierCurveTo(1.6+offset,-1.2,-1.5+offset,1.3,1.45+offset,2.5);ctx.strokeStyle='#9d574d';ctx.lineWidth=.4;ctx.stroke();
+      });
+      this._ellipse(-.9,-1.2,.55,.38,'rgba(255,255,249,.7)');ctx.restore();
       if (afterHit && hitP < .22 && !this._bowled && !this._missed) {
-        const alpha = (1 - hitP / .22) * .75;
-        this._ellipse(CONTACT.x, CONTACT.y, 5 + hitP * 66, 3 + hitP * 38, null, `rgba(237, 244, 157, ${alpha})`, 2);
+        const alpha=(1-hitP/.22)*.18;
+        for(let i=0;i<5;i++)this._ellipse(CONTACT.x+(i-2)*(1+hitP*12),CONTACT.y+hitP*8, .7,.3,`rgba(216,201,166,${alpha})`);
       }
     }
 
     _drawOverlay() {
       const ctx = this.ctx;
-      ctx.textBaseline = 'middle';
-      ctx.font = '600 9px system-ui, sans-serif';
-      ctx.letterSpacing = '1px';
-      ctx.fillStyle = '#cbd9bb';
-      ctx.fillText('THE OVAL', 25, 22);
-      ctx.letterSpacing = '0px';
-      if (this.active) {
-        this._ellipse(629, 21, 3, 3, '#d8f075');
-        ctx.fillStyle = '#e2ecce';
-        ctx.font = '600 9px system-ui, sans-serif';
-        ctx.fillText(this._interactive ? 'YOUR SHOT' : 'LIVE BALL', 638, 22);
-      } else {
-        ctx.fillStyle = '#7ea08b';
-        ctx.fillText('EST. 2026', 640, 22);
-      }
       if (!this._shot || this._elapsed < this._hitAt + 140) return;
       const runs = this._result.runs || 0;
       const label = String(this._result.label || (this._caught ? 'CAUGHT!' : this._bowled ? 'BOWLED!' : runs === 6 ? 'SIX!' : runs === 4 ? 'FOUR!' : runs ? `${runs} RUN${runs === 1 ? '' : 'S'}` : 'DOT BALL'));
@@ -540,10 +852,14 @@
       ctx.globalAlpha = smooth(t);
       ctx.font = `800 ${runs >= 4 || this._result.wicket ? 22 : 16}px system-ui, sans-serif`;
       ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
       ctx.shadowColor = 'rgba(0, 24, 15, .6)';
       ctx.shadowBlur = 10;
       ctx.fillStyle = this._result.wicket ? '#ffb077' : '#e1f393';
-      ctx.fillText(label, 360, 82 - (1 - ease(t)) * 8);
+      ctx.fillText(label, 360, 80 - (1 - ease(t)) * 8);
+      ctx.font = '600 7px system-ui, sans-serif';
+      ctx.fillStyle = '#e3eccc';
+      ctx.fillText(`${this._result.shot || this.shotAim.shot}  ·  ${Math.round(this._shot.power * 100)}% POWER`, 360, 97);
       ctx.restore();
     }
   }

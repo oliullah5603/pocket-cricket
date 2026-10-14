@@ -5,7 +5,7 @@
 (function (global) {
   'use strict';
 
-  const PROTOCOL = 'pocket-cricket-v1';
+  const PROTOCOL = 'pocket-cricket-v2';
   const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   const DELIVERY_TYPES = ['pace', 'spin', 'yorker'];
   const clone = value => JSON.parse(JSON.stringify(value));
@@ -63,7 +63,7 @@
       try { this.callbacks[event](value); } catch (error) { console.error('Cricket callback failed:', error); }
     }
     _status(status) { this.status = status; this._emit('onStatus', status); }
-    _lobby() { this._emit('onLobby', { code: this.code, players: this.players.slice(), isHost: this.isHost, connected: this.connected, rematchVotes: this._rematchVotes.slice() }); }
+    _lobby() { this._emit('onLobby', { code: this.code, players: this.players.slice(), isHost: this.isHost, connected: this.connected, settings: this._settings ? clone(this._settings) : null, rematchVotes: this._rematchVotes.slice() }); }
     _showMatch() { this._emit('onMatch', this.state); }
     _require(condition, message) { if (!condition) throw new Error(message); }
     _requireReady() { this._require(this.connected, 'Your opponent is not connected. Create or join a room again.'); }
@@ -177,7 +177,7 @@
       const metadata = conn.metadata || {};
       if (!this.isHost || this._conn || metadata.protocol !== PROTOCOL || metadata.code !== this.code) {
         conn.on('open', () => {
-          try { conn.send({ v: 1, code: this.code, type: 'reject', message: 'This room is full or incompatible. Ask the host for a fresh room.' }); } catch (_) {}
+          try { conn.send({ v: 2, code: this.code, type: 'reject', message: 'This room is full or incompatible. Ask the host for a fresh room.' }); } catch (_) {}
           setTimeout(() => conn.close(), 150);
         });
         conn.on('error', () => conn.close());
@@ -205,12 +205,12 @@
 
     _send(type, payload = {}) {
       this._require(this._conn && this._conn.open && !this._closed, 'Your opponent is disconnected.');
-      this._conn.send({ v: 1, code: this.code, session: this._sessionId, type, ...payload });
+      this._conn.send({ v: 2, code: this.code, session: this._sessionId, type, ...payload });
     }
 
     async _handle(packet) {
       this._require(packet && typeof packet === 'object' && !Array.isArray(packet) && JSON.stringify(packet).length < 8192, 'Received an invalid game message.');
-      this._require(packet.v === 1 && packet.code === this.code && typeof packet.type === 'string', 'The players are using incompatible game versions.');
+      this._require(packet.v === 2 && packet.code === this.code && typeof packet.type === 'string', 'The players are using incompatible game versions.');
       if (packet.type === 'reject') throw new Error('This room is full. Ask the host for a fresh room.');
       if (packet.type === 'hello') {
         this._require(this.isHost && !this._connected && validName(packet.name), 'Invalid room join request.');
@@ -267,11 +267,11 @@
         }
         case 'shot': {
           this._require(this._state.phase === 'playing' && this._state.batter !== this.seat && this._pending && this._pending.acknowledged && packet.seq === this._pending.seq && this._validShot(packet) && /^[a-f0-9]{64}$/.test(packet.result), 'Invalid or repeated shot.');
-          const delivery = { type: this._pending.type, seed: this._pending.seed, timing: packet.timing, aim: packet.aim };
+          const delivery = { type: this._pending.type, seed: this._pending.seed, timing: packet.timing, angle: packet.angle, power: packet.power };
           const next = global.CricketEngine.applyDelivery(this._state, delivery);
           this._require(await hash(next) === packet.result, 'The score did not match on both browsers. Create a fresh room.');
           if (this._closed) return;
-          this._emit('onShot', { timing: packet.timing, aim: packet.aim });
+          this._emit('onShot', { timing: packet.timing, angle: packet.angle, power: packet.power });
           this._finishBall(next);
           break;
         }
@@ -331,7 +331,7 @@
       this._send('delivery', { match: this._matchId, seq: this._pending.seq, deliveryType: type, seed });
     }
     _deliveryView() { return { type: this._pending.type, seed: this._pending.seed, id: this._matchId + ':' + this._pending.seq }; }
-    _validShot(shot) { return (shot.timing === null || (Number.isFinite(shot.timing) && shot.timing >= -3000 && shot.timing <= 3000)) && Number.isFinite(shot.aim) && shot.aim >= -1 && shot.aim <= 1; }
+    _validShot(shot) { return (shot.timing === null || (Number.isFinite(shot.timing) && shot.timing >= -3000 && shot.timing <= 3000)) && Number.isFinite(shot.angle) && shot.angle >= -Math.PI && shot.angle <= Math.PI && Number.isFinite(shot.power) && shot.power >= 0 && shot.power <= 1; }
 
     async swing(shot) {
       this._requireReady();
@@ -342,12 +342,12 @@
       const generation = this._generation;
       pending.shooting = true;
       try {
-        const delivery = { type: pending.type, seed: pending.seed, timing: shot.timing, aim: shot.aim };
+        const delivery = { type: pending.type, seed: pending.seed, timing: shot.timing, angle: shot.angle, power: shot.power };
         const next = global.CricketEngine.applyDelivery(this._state, delivery);
         const result = await hash(next);
         this._requireReady();
         this._require(generation === this._generation && this._pending === pending, 'The match has closed.');
-        this._send('shot', { match: this._matchId, seq: pending.seq, timing: shot.timing, aim: shot.aim, result });
+        this._send('shot', { match: this._matchId, seq: pending.seq, timing: shot.timing, angle: shot.angle, power: shot.power, result });
         this._finishBall(next);
       } catch (error) { if (!this._closed) this._fail(error.message); throw error; }
     }
@@ -415,6 +415,7 @@
       this._state = null;
       this._pending = null;
       this._sessionId = '';
+      this._settings = null;
       this._matchId = '';
       this._retiredMatches.clear();
       this._lastAdvanceSeq = null;

@@ -2,22 +2,78 @@
   'use strict';
   const $ = id => document.getElementById(id);
   const Engine = window.CricketEngine;
+  function fitViewport() {
+    const viewport = window.visualViewport;
+    const width = Math.min(viewport?.width || window.innerWidth, document.documentElement.clientWidth || window.innerWidth);
+    const height = Math.min(viewport?.height || window.innerHeight, window.innerHeight);
+    $('stadium').style.setProperty('--game-width', `${Math.floor(width)}px`);
+    $('stadium').style.setProperty('--game-height', `${Math.floor(height)}px`);
+  }
+  fitViewport();
+  window.addEventListener('resize', fitViewport);
+  window.visualViewport?.addEventListener('resize', fitViewport);
   const safeRead = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } };
   const safeWrite = (key, value) => { try { value === null ? localStorage.removeItem(key) : localStorage.setItem(key, JSON.stringify(value)); } catch {} };
   const stats = safeRead('pocket-cricket-stats-v1', {games: 0, wins: 0, best: 0});
   let mode = 'cpu', match = null, pendingMatch = null, room = null, connected = false;
   let busy = false, currentDelivery = null, recorded = false, rematchRequested = false, paused = false;
   let timers = [], modalAction = null, modalCancel = null, previousFocus = null, toastTimer;
-  let sound = safeRead('pocket-cricket-sound', false), audioContext;
+  let sound = safeRead('pocket-cricket-sound', false), audioContext, spaceHeld = false;
+  const pauseReasons = new Set();
+  let menuTab = 'match', returnToMenu = false;
   const pitch = new CricketPitch($('pitchCanvas'), {
     onSwing: shot => receiveSwing(shot),
     onFinish: () => finishBall(),
-    onProgress: progress => { $('timingCursor').style.left = `${Math.min(100, Math.max(0, progress * 85))}%`; }
+    onProgress: progress => { $('timingCursor').style.left = `${Math.min(100, Math.max(0, progress * 85))}%`; },
+    onAim: updateShotReadout,
+    onCharge: info => { $('powerFill').style.width = `${Math.round(info.power * 100)}%`; $('powerValue').textContent = `${Math.round(info.power * 100)}%`; $('powerFill').classList.toggle('charging', info.charging); }
   });
   const randomUint = () => { const a = new Uint32Array(1); crypto.getRandomValues(a); return a[0]; };
   const randomType = () => ['pace', 'spin', 'yorker'][randomUint() % 3];
   function later(fn, ms) { const id = setTimeout(fn, ms); timers.push(id); return id; }
   function clearTimers() { timers.forEach(clearTimeout); timers = []; }
+  function panelOpen() { return !$('gameMenu').hidden || !$('scorecard').hidden || !$('modal').hidden; }
+  function pauseFor(reason, enabled) {
+    enabled ? pauseReasons.add(reason) : pauseReasons.delete(reason);
+    paused = mode !== 'online' && pauseReasons.size > 0;
+    if (paused) { spaceHeld = false; pitch.pause?.(); }
+    else pitch.resume?.();
+  }
+  function schedulePlay() { if (match?.phase === 'playing' && mode !== 'online' && amBatting() && !busy && !paused && !panelOpen()) later(startAutomaticBall, 800); }
+  function selectMenuTab(tab) {
+    menuTab = tab;
+    for (const name of ['match', 'controls']) {
+      const suffix = name === 'match' ? 'Match' : 'Controls';
+      $('menuTab' + suffix).setAttribute('aria-selected', String(name === tab));
+      $('menuTab' + suffix).classList.toggle('selected', name === tab);
+      $('menuTab' + suffix).tabIndex = name === tab ? 0 : -1;
+      $('menu' + suffix + 'Panel').hidden = name !== tab;
+    }
+  }
+  function showMenu() { selectMenuTab(menuTab); $('gameMenu').hidden = false; pauseFor('menu', true); render(); $('menuClose').focus(); }
+  function closeMenu() { $('gameMenu').hidden = true; pauseFor('menu', false); render(); schedulePlay(); }
+  function showScorecard() {
+    returnToMenu = !$('gameMenu').hidden;
+    pauseFor('scorecard', true);
+    $('gameMenu').hidden = true; pauseFor('menu', false);
+    $('scorecard').hidden = false; render(); $('scorecardClose').focus();
+  }
+  function closeScorecard() {
+    $('scorecard').hidden = true;
+    if (returnToMenu) { $('gameMenu').hidden = false; pauseFor('menu', true); }
+    pauseFor('scorecard', false); render();
+    if (returnToMenu) $('scorecardButton').focus(); else schedulePlay();
+    returnToMenu = false;
+  }
+  function closePanels() { $('gameMenu').hidden = $('scorecard').hidden = $('modal').hidden = true; returnToMenu = false; pauseReasons.clear(); paused = false; spaceHeld = false; pitch.resume?.(); }
+  function updateShotReadout(shot) {
+    const angle = shot.angle ?? -Math.PI / 2;
+    const power = shot.power ?? .7;
+    $('powerFill').style.width = `${Math.round(power * 100)}%`;
+    $('powerValue').textContent = `${Math.round(power * 100)}%`;
+    $('shotName').textContent = shot.shot || Engine.shotName?.(angle, power) || 'Straight drive';
+    $('shotAngle').textContent = `${Math.round(angle * 180 / Math.PI)}°`;
+  }
   function toast(text) { clearTimeout(toastTimer); $('toast').textContent = text; $('toast').hidden = false; toastTimer = setTimeout(() => $('toast').hidden = true, 4200); }
   function tone(outcome) {
     if (!sound) return;
@@ -38,9 +94,9 @@
     $('modalTitle').textContent = title; $('modalDescription').textContent = description; $('modalIcon').textContent = icon;
     $('modalPrimary').textContent = primary; $('modalSecondary').textContent = secondary || '';
     $('modalSecondary').hidden = !secondary; modalAction = action; modalCancel = cancel || hideModal;
-    $('modal').hidden = false; $('modalPrimary').focus();
+    $('modal').hidden = false; pauseFor('modal', true); $('modalPrimary').focus();
   }
-  function hideModal() { $('modal').hidden = true; modalAction = null; modalCancel = null; previousFocus?.focus(); if (match?.phase === 'playing' && mode !== 'online' && amBatting() && !busy && !paused) later(startAutomaticBall, 750); }
+  function hideModal() { $('modal').hidden = true; pauseFor('modal', false); modalAction = null; modalCancel = null; previousFocus?.focus(); schedulePlay(); }
   $('modalPrimary').onclick = () => { const fn = modalAction; hideModal(); fn?.(); };
   $('modalSecondary').onclick = () => { const fn = modalCancel; hideModal(); fn?.(); };
   function mySeat() { return mode === 'online' ? room?.seat ?? 0 : mode === 'local' ? match?.batter ?? 0 : 0; }
@@ -63,7 +119,7 @@
     clearTimers(); pitch.reset(); busy = false; currentDelivery = null; pendingMatch = null; match = null; recorded = false; rematchRequested = false; paused = false;
     $('outcomeBadge').hidden = true; $('timingCursor').style.left = '0%'; $('fieldCaption').textContent = 'Good vibes. Great cover drives.';
     if (leaveRoom) { room?.leave(); room = null; connected = false; $('roomCard').hidden = true; $('onlineStatus').hidden = true; }
-    $('modal').hidden = true; render();
+    $('modal').hidden = true; pauseReasons.clear(); paused = false; spaceHeld = false; render();
   }
   function lockSetup(locked) {
     document.querySelectorAll('[data-mode]').forEach(b => b.disabled = locked);
@@ -73,32 +129,34 @@
     $('resumeButton').hidden = locked || !safeRead('pocket-cricket-save-v1', null);
   }
   function render() {
-    const view = match || Engine.createMatch({names: [playerName(), mode === 'local' ? $('friendName').value.trim() || 'Player 2' : mode === 'online' ? 'Your friend' : 'Computer'], ...settings()});
+    const view = match || Engine.createMatch({names: room?.players?.length === 2 ? room.players : [playerName(), mode === 'local' ? $('friendName').value.trim() || 'Player 2' : mode === 'online' ? 'Your friend' : 'Computer'], ...settings()});
     view.players.forEach((name, i) => {
       $('name' + i).textContent = name;
       if (match && view.batter === i && view.phase !== 'finished') { const label = document.createElement('span'); label.textContent = 'BAT'; $('name' + i).append(' ', label); }
       $('score' + i).innerHTML = `${view.scores[i].runs}<span>/${view.scores[i].wickets}</span>`;
-      $('overs' + i).textContent = `${Math.floor(view.scores[i].balls / 6)}.${view.scores[i].balls % 6} / ${view.overs} overs`;
+      $('overs' + i).textContent = `${Math.floor(view.scores[i].balls / 6)}.${view.scores[i].balls % 6} / ${view.overs} ${view.overs === 1 ? 'over' : 'overs'}`;
       $('team' + i).classList.toggle('active', view.batter === i && view.phase !== 'finished');
     });
     $('matchMode').textContent = mode === 'online' ? 'FRIENDLY ONLINE' : mode === 'local' ? 'LOCAL DERBY' : 'QUICK MATCH';
-    $('inningsLabel').textContent = match ? `${view.innings === 0 ? '1st' : '2nd'} innings · ${view.overs} overs` : `${view.overs} overs · 3 wickets`;
+    $('inningsLabel').textContent = match ? `${view.innings === 0 ? '1st' : '2nd'} innings · ${view.overs} ${view.overs === 1 ? 'over' : 'overs'}` : `${view.overs} ${view.overs === 1 ? 'over' : 'overs'} · 3 wickets`;
     const score = view.scores[view.batter];
     $('targetLine').textContent = !match ? 'The pitch is yours. Start a match to play.' : view.phase === 'finished' ? Engine.resultText(view) : view.target ? `${view.players[view.batter]} need ${Math.max(0, view.target - score.runs)} runs from ${Math.max(0, view.overs * 6 - score.balls)} balls · Target ${view.target}` : `${view.players[view.batter]} are setting the target · ${view.wicketLimit - score.wickets} wickets left`;
     const batting = !match || amBatting();
-    $('pauseButton').hidden = !match || mode === 'online' || !batting || view.phase !== 'playing';
+    $('shotPanelTitle').textContent = batting ? 'YOUR SHOT' : 'BATTER’S SHOT';
+    $('pauseButton').hidden = !match || mode === 'online' || view.phase !== 'playing';
     $('pauseButton').textContent = paused ? 'Resume play' : 'Pause';
     $('battingControls').hidden = !batting; $('bowlingControls').hidden = batting || !match || view.phase !== 'playing';
-    $('swingButton').disabled = !match || !busy || !batting || (mode === 'online' && !connected);
-    $('aimLeft').disabled = $('aimRight').disabled = !match || !batting || view.phase !== 'playing' || (mode === 'online' && !connected);
-    document.querySelectorAll('[data-delivery]').forEach(b => b.disabled = busy || view.phase !== 'playing' || (mode === 'online' && !connected));
+    $('swingButton').disabled = !match || !busy || !batting || paused || (mode === 'online' && !connected);
+    $('aimLeft').disabled = $('aimRight').disabled = !match || !batting || paused || view.phase !== 'playing' || (mode === 'online' && !connected);
+    document.querySelectorAll('[data-delivery]').forEach(b => b.disabled = busy || paused || view.phase !== 'playing' || (mode === 'online' && !connected));
     $('nextButton').hidden = !match || busy;
     $('newMatchButton').hidden = !match;
     $('newMatchButton').textContent = view.phase === 'finished' ? 'New match' : 'End match';
     $('rolePill').textContent = !match ? 'YOUR CREASE' : batting ? 'BATTING' : 'BOWLING';
-    $('playTitle').textContent = !match ? 'Ready for the first ball?' : view.phase === 'finished' ? 'That’s a wrap!' : view.phase === 'innings-break' ? 'Time to switch sides.' : busy ? batting ? 'Watch it. Time it. Hit it.' : 'Let’s see that shot.' : batting ? mode === 'online' ? 'Waiting for the bowler…' : paused ? 'Match paused.' : 'Next delivery coming up…' : 'Pick your delivery.';
-    $('playDescription').textContent = !match ? 'Start a match, then swing as the ball reaches the bat.' : view.phase === 'finished' ? 'Check the scorecard, or go again.' : view.phase === 'innings-break' ? `${view.players[1 - view.batter]} will chase ${score.runs + 1}.` : busy ? batting ? 'Swing when the marker enters the green hit zone.' : 'The batter is playing this ball.' : batting ? mode === 'online' ? 'Your friend chooses the next ball.' : paused ? 'Resume when you are ready to face the next ball.' : 'The bowler delivers automatically. Stay ready to swing.' : 'Pace, spin or yorker — keep the batter guessing.';
-    $('controlHint').textContent = batting ? '← → to aim · Space to swing · Perfect timing = six.' : 'Choose a delivery. The batter controls the shot.';
+    $('playTitle').textContent = !match ? 'Welcome to the crease' : view.phase === 'finished' ? 'Match complete' : view.phase === 'innings-break' ? 'Innings break' : paused ? 'Match paused' : busy ? batting ? 'Watch the ball. Release your shot.' : 'Delivery in play' : batting ? mode === 'online' ? 'Waiting for the bowler' : 'Next delivery coming up' : 'Pick your delivery';
+    $('playDescription').textContent = !match ? 'Open the in-game menu to start a match.' : view.phase === 'finished' ? 'View the scorecard or play a rematch.' : view.phase === 'innings-break' ? `${view.players[1 - view.batter]} chase ${score.runs + 1}.` : paused ? 'Resume play when you are ready.' : busy ? batting ? 'Click when the ball reaches the bat. Aim away from fielders.' : 'The batter controls this shot.' : batting ? mode === 'online' ? 'Your friend chooses the next delivery.' : 'Automatic bowling — stay ready.' : 'Pace, spin or yorker.';
+    $('controlHint').textContent = batting ? 'Move to aim · Farther cursor = more power · Click to hit' : 'Choose a delivery to bowl';
+    $('inputHint').textContent = batting ? 'HOLD FOR EXTRA POWER · RELEASE TO STRIKE' : 'BOWL TO YOUR OPPONENT';
     if (match && !busy) {
       if (view.phase === 'innings-break') { $('nextButton').textContent = 'Start the chase →'; $('nextButton').disabled = mode === 'online' && !room?.isHost; }
       else if (view.phase === 'finished') { $('nextButton').textContent = rematchRequested ? 'Waiting for friend…' : 'Play again ↗'; $('nextButton').disabled = rematchRequested || (mode === 'online' && !connected); }
@@ -108,15 +166,15 @@
     lockSetup(!!match || !!room);
     if (room && !match) { $('startButton').hidden = !connected || !room.isHost; $('startButton').disabled = !connected; $('startButton').textContent = 'Start online match ↗'; }
     else $('startButton').hidden = !!match;
-    const history = view.history.slice(-6).reverse();
+    const history = view.history.slice().reverse();
     $('historyCount').textContent = `${view.history.length} DELIVER${view.history.length === 1 ? 'Y' : 'IES'}`;
     $('historyList').replaceChildren();
     if (!history.length) { const p = document.createElement('p'); p.className = 'hint'; p.textContent = 'A fresh pitch. A story waiting to happen.'; $('historyList').append(p); }
     history.forEach(ball => {
       const row = document.createElement('div'); row.className = 'delivery';
       const icon = document.createElement('span'); icon.className = `delivery-icon ${ball.wicket ? 'wicket' : ball.runs === 6 ? 'six' : ball.runs === 4 ? 'four' : ''}`; icon.textContent = ball.wicket ? 'W' : ball.runs;
-      const text = document.createElement('div'); text.className = 'delivery-text'; const strong = document.createElement('strong'); strong.textContent = ball.label; const small = document.createElement('small'); small.textContent = `${view.players[ball.batter]} · ${ball.type} · ${ball.over}`; text.append(strong, small);
-      const tag = document.createElement('span'); tag.className = 'delivery-score'; tag.textContent = ball.timing === null ? 'Missed' : `${Math.round(ball.quality * 100)}% timing`;
+      const text = document.createElement('div'); text.className = 'delivery-text'; const strong = document.createElement('strong'); strong.textContent = ball.label; const small = document.createElement('small'); small.textContent = `${view.players[ball.batter]} · ${ball.shot || ball.type} · ${ball.over}`; text.append(strong, small);
+      const tag = document.createElement('span'); tag.className = 'delivery-score'; tag.textContent = ball.timing === null ? 'Missed' : `${Math.round(ball.quality * 100)}% timing · ${Math.round((ball.power ?? .8) * 100)}% power`;
       row.append(icon, text, tag); $('historyList').append(row);
     });
     $('ballTrail').replaceChildren();
@@ -131,17 +189,17 @@
   }
   function startOffline() {
     resetGame();
+    closePanels();
     match = Engine.createMatch({names: [playerName(), mode === 'local' ? $('friendName').value.trim() || 'Player 2' : 'Computer'], ...settings()});
     saveMatch(); render();
-    $('stadium').scrollIntoView({behavior: 'smooth', block: 'center'});
     if (mode === 'local') localHandoff(() => startAutomaticBall());
-    else if (amBatting()) showModal({title: 'You’re on strike.', description: 'Watch the ball reach the bat, then press Space or tap Swing. Aim with the arrow buttons. Deliveries continue automatically; use Pause for a break.', primary: 'Ready to bat →', action: () => later(startAutomaticBall, 750)});
+    else if (amBatting()) showModal({title: 'You’re on strike.', description: 'Move your cursor around the batter to aim. Farther from the bat means more power. Click as the ball reaches the crease; hold and release for an extra power boost. Ground shots are safer, lofted shots can clear the rope or be caught.', primary: 'Ready to bat →', action: () => later(startAutomaticBall, 850)});
   }
   function localHandoff(action) {
     showModal({title: `${match.players[match.batter]}, you’re up.`, description: 'Pass the device to the batter. Face the automatic bowler, time your swings, and set a score for your friend to beat.', primary: 'Ready to bat →', action});
   }
   function startAutomaticBall() {
-    if (!match || busy || match.phase !== 'playing' || paused || document.visibilityState === 'hidden' || !$('modal').hidden) return;
+    if (!match || busy || match.phase !== 'playing' || paused || document.visibilityState === 'hidden' || panelOpen()) return;
     beginDelivery({type: match.scores[match.batter].balls === 0 ? 'spin' : randomType(), seed: randomUint(), id: `${match.ball + 1}`});
   }
   function beginDelivery(delivery) {
@@ -154,17 +212,20 @@
       // CPU timing is picked before the ball, independently of the player's input.
       const miss = randomUint() % 9 === 0;
       const timing = miss ? null : (randomUint() % 451) - 225;
-      const aim = (randomUint() % 201 - 100) / 100;
+      const angle = (randomUint() / 4294967295 * 2 - 1) * Math.PI;
+      const power = .28 + randomUint() / 4294967295 * .72;
       const delay = Engine.deliveryDuration(delivery.type) + (timing ?? 220);
       later(() => {
         if (!busy || currentDelivery?.id !== delivery.id) return;
-        const shot = {timing, aim}; pitch.showShot(shot); receiveSwing(shot);
+        const shot = {timing, angle, power}; pitch.showShot(shot); receiveSwing(shot);
       }, Math.max(50, delay));
     }
   }
   async function receiveSwing(shot) {
     if (!busy || !currentDelivery || pendingMatch) return;
     $('swingButton').disabled = true;
+    spaceHeld = false;
+    updateShotReadout(shot);
     try {
       if (mode === 'online') await room.swing(shot);
       else acceptMatch(Engine.applyDelivery(match, {...currentDelivery, ...shot}));
@@ -176,6 +237,7 @@
     if (!match) return;
     const last = match.lastBall;
     if (last) {
+      updateShotReadout(last);
       $('outcomeBadge').textContent = last.label; $('outcomeBadge').hidden = false;
       $('outcomeBadge').classList.toggle('wicket', last.wicket);
       $('fieldCaption').textContent = last.wicket ? 'The stumps have a story to tell.' : last.runs === 6 ? 'That one’s out of the park!' : last.runs === 4 ? 'All the way to the rope.' : last.runs ? 'Keep the scoreboard ticking.' : 'The bowler wins this one.';
@@ -190,7 +252,7 @@
         stats.best = Math.max(stats.best, match.scores[mySeat()].runs);
         safeWrite('pocket-cricket-stats-v1', stats); updateStats();
       }
-      showModal({title: match.winner === -1 ? 'What a match. It’s a tie!' : `${match.players[match.winner]} take the win!`, description: `${Engine.resultText(match)} Final score: ${match.players[0]} ${match.scores[0].runs}/${match.scores[0].wickets} — ${match.players[1]} ${match.scores[1].runs}/${match.scores[1].wickets}.`, icon: '🏆', primary: mode === 'online' ? 'Request rematch ↗' : 'One more match ↗', action: playAgain, secondary: 'View scorecard'});
+      showModal({title: match.winner === -1 ? 'What a match. It’s a tie!' : `${match.players[match.winner]} take the win!`, description: `${Engine.resultText(match)} Final score: ${match.players[0]} ${match.scores[0].runs}/${match.scores[0].wickets} — ${match.players[1]} ${match.scores[1].runs}/${match.scores[1].wickets}.`, icon: '🏆', primary: mode === 'online' ? 'Request rematch ↗' : 'One more match ↗', action: playAgain, secondary: 'View scorecard', cancel: showScorecard});
     } else if (match.phase === 'innings-break') {
       toast(`Innings over! ${match.players[1 - match.batter]} need ${match.scores[match.batter].runs + 1} to win.`);
     } else if (mode !== 'online' && amBatting() && !paused) later(startAutomaticBall, 1350);
@@ -222,17 +284,18 @@
         render();
       },
       onLobby: lobby => {
+        if (lobby.settings) { $('oversSelect').value = String(lobby.settings.overs); $('batFirstSelect').value = String(lobby.settings.batFirst); }
         connected = lobby.connected; $('roomCard').hidden = false; $('onlineFields').hidden = true;
         $('roomCode').textContent = lobby.code; $('roomPlayers').textContent = lobby.connected ? `${lobby.players[0]} vs ${lobby.players[1]}` : 'Waiting for a friend…'; render();
       },
       onMatch: next => {
         const first = !match || next.ball === 0;
-        if (first) { pitch.reset(); busy = false; $('outcomeBadge').hidden = true; $('modal').hidden = true; }
+        if (first) { pitch.reset(); busy = false; $('outcomeBadge').hidden = true; closePanels(); }
         acceptMatch(next);
         if (first) toast('Match on! The bowler chooses the first delivery.');
       },
       onDelivery: beginDelivery,
-      onShot: shot => pitch.showShot(shot),
+      onShot: shot => { updateShotReadout(shot); pitch.showShot(shot); },
       onError: message => { toast(message); if (!connected && !match) { room?.leave(false); room = null; $('roomCard').hidden = true; $('onlineFields').hidden = false; } roomStatus(message); render(); }
     });
   }
@@ -251,28 +314,45 @@
   $('joinButton').onclick = () => openRoom(true);
   $('roomInput').onkeydown = event => { if (event.key === 'Enter') $('joinButton').click(); };
   $('nextButton').onclick = () => { if (!match || busy) return; if (match.phase === 'innings-break') continueInnings(); else if (match.phase === 'finished') playAgain(); else startAutomaticBall(); };
-  $('pauseButton').onclick = () => { paused = !paused; render(); if (!paused && !busy) later(startAutomaticBall, 550); if (paused && busy) toast('Pause will begin after this ball.'); };
+  $('pauseButton').onclick = () => { pauseFor('manual', !pauseReasons.has('manual')); render(); schedulePlay(); };
   document.querySelectorAll('[data-delivery]').forEach(button => button.onclick = async () => {
     if (!match || busy || amBatting() || match.phase !== 'playing') return;
     try { mode === 'online' ? await room.bowl(button.dataset.delivery) : beginDelivery({type: button.dataset.delivery, seed: randomUint(), id: `${match.ball + 1}`}); } catch (error) { toast(error.message); }
   });
-  let aim = 0;
-  function changeAim(delta) { aim = Math.min(1, Math.max(-1, aim + delta)); pitch.setAim(aim); $('aimLeft').classList.toggle('selected', aim < 0); $('aimRight').classList.toggle('selected', aim > 0); }
-  $('aimLeft').onclick = () => changeAim(-.35); $('aimRight').onclick = () => changeAim(.35);
+  function changeAim(delta) {
+    const aim = pitch.shotAim || {angle: -Math.PI / 2, power: .7};
+    const angle = Math.atan2(Math.sin(aim.angle + delta), Math.cos(aim.angle + delta));
+    pitch.setShotAim({angle, power: aim.power});
+  }
+  $('aimLeft').onclick = () => changeAim(-.15); $('aimRight').onclick = () => changeAim(.15);
   $('swingButton').onclick = () => { if (!$('swingButton').disabled) pitch.swing(); };
-  $('pitchCanvas').onclick = () => { if (!$('swingButton').disabled) pitch.swing(); };
+  $('swingButton').onpointerdown = event => { if (!$('swingButton').disabled) { event.preventDefault(); $('swingButton').setPointerCapture(event.pointerId); pitch.startCharge(); } };
+  $('swingButton').onpointerup = event => { if (!$('swingButton').disabled) { event.preventDefault(); pitch.releaseShot(); } };
+  $('swingButton').onpointercancel = () => pitch.cancelCharge?.();
+  function trapFocus(event, panel) {
+    if (event.key !== 'Tab') return;
+    const controls = [...panel.querySelectorAll('button:not(:disabled),input:not(:disabled),select:not(:disabled)')].filter(element => element.offsetParent !== null && element.tabIndex >= 0);
+    if (!controls.length) return;
+    const current = controls.indexOf(document.activeElement);
+    event.preventDefault(); controls[(current + (event.shiftKey ? controls.length - 1 : 1)) % controls.length].focus();
+  }
   document.addEventListener('keydown', event => {
     if (!$('modal').hidden) {
       if (event.key === 'Escape' && !$('modalSecondary').hidden) { event.preventDefault(); $('modalSecondary').click(); }
-      if (event.key === 'Tab') { const buttons = [$('modalPrimary'), ...(!$('modalSecondary').hidden ? [$('modalSecondary')] : [])]; const index = buttons.indexOf(document.activeElement); event.preventDefault(); buttons[(index + (event.shiftKey ? buttons.length - 1 : 1)) % buttons.length].focus(); }
+      trapFocus(event, $('modal'));
       return;
     }
+    if (!$('scorecard').hidden) { if (event.key === 'Escape') { event.preventDefault(); closeScorecard(); } trapFocus(event, $('scorecard')); return; }
+    if (!$('gameMenu').hidden) { if (event.key === 'Escape') { event.preventDefault(); closeMenu(); } trapFocus(event, $('gameMenu')); return; }
+    if (event.key === 'Escape') { event.preventDefault(); showMenu(); return; }
     if (['INPUT', 'SELECT', 'TEXTAREA'].includes(event.target.tagName) || event.repeat || !match) return;
-    if (event.code === 'Space' && !$('swingButton').disabled) { event.preventDefault(); pitch.swing(); }
-    else if (event.key === 'ArrowLeft' && !$('aimLeft').disabled) { event.preventDefault(); changeAim(-.35); }
-    else if (event.key === 'ArrowRight' && !$('aimRight').disabled) { event.preventDefault(); changeAim(.35); }
+    if (event.code === 'Space' && !$('swingButton').disabled) { event.preventDefault(); spaceHeld = pitch.startCharge(); }
+    else if (event.key === 'ArrowLeft' && !$('aimLeft').disabled) { event.preventDefault(); changeAim(-.15); }
+    else if (event.key === 'ArrowRight' && !$('aimRight').disabled) { event.preventDefault(); changeAim(.15); }
+    else if (event.key.toLowerCase() === 'p' && mode !== 'online' && match.phase === 'playing') { event.preventDefault(); $('pauseButton').click(); }
   });
-  function endMatch() { safeWrite('pocket-cricket-save-v1', null); resetGame({leaveRoom: mode === 'online'}); setMode(mode); }
+  document.addEventListener('keyup', event => { if (event.code === 'Space' && spaceHeld) { event.preventDefault(); spaceHeld = false; if (!paused && !panelOpen()) pitch.releaseShot(); else pitch.cancelCharge?.(); } });
+  function endMatch() { safeWrite('pocket-cricket-save-v1', null); resetGame({leaveRoom: mode === 'online'}); setMode(mode); showMenu(); }
   $('newMatchButton').onclick = () => match?.phase === 'finished' ? endMatch() : showModal({title: 'Leave this match?', description: mode === 'online' ? 'Your friend will be disconnected from this match. You can create a new room afterward.' : 'This match will end. You can start a fresh one right away.', primary: 'End match', action: endMatch, secondary: 'Keep playing'});
   $('leaveButton').onclick = () => match && match.phase !== 'finished' ? $('newMatchButton').click() : endMatch();
   document.querySelectorAll('[data-mode]').forEach(button => button.onclick = () => setMode(button.dataset.mode));
@@ -282,20 +362,37 @@
     try { await navigator.clipboard.writeText(url.toString()); toast('Invite copied! Send it to your friend.'); } catch { toast(`Room code: ${room.code}. Share it with your friend.`); }
   };
   $('soundButton').onclick = () => { sound = !sound; safeWrite('pocket-cricket-sound', sound); updateSound(); if (sound) tone({runs: 4, wicket: false}); };
-  $('helpButton').onclick = () => showModal({title: 'Welcome to the crease.', description: 'Bat: press Space, tap the field, or use Swing as the ball reaches the bat. The marker’s green zone is the sweet spot. Use ← / → to aim away from fielders. Bowl: choose pace, spin or yorker. Each team gets up to 3 wickets and 1, 2 or 5 overs. The second innings chases the first score. In local mode, pass the device between batting innings. Online, share a room code and keep both tabs open. Refreshing ends an online room.', primary: 'Got it. Let’s play.'});
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && match?.phase === 'playing' && !busy && amBatting() && mode !== 'online' && !paused) later(startAutomaticBall, 800); });
+  $('helpButton').onclick = () => showModal({title: 'Rules & timing', description: 'Six balls per over. Three wickets per team. Bat for two innings; the chase ends as soon as the target is reached. Click when the ball reaches the bat, or hold and release for extra power. Close targets produce grounded shots; far targets produce lofted shots that can be caught. Choose pace, spin or yorker when bowling. Offline play pauses in menus; online play continues.', primary: 'Back to controls'});
+  $('menuTabMatch').onclick = () => selectMenuTab('match');
+  $('menuTabControls').onclick = () => selectMenuTab('controls');
+  ['menuTabMatch', 'menuTabControls'].forEach(id => $(id).addEventListener('keydown', event => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const tab = event.key === 'Home' ? 'match' : event.key === 'End' ? 'controls' : menuTab === 'match' ? 'controls' : 'match';
+    selectMenuTab(tab); $(tab === 'match' ? 'menuTabMatch' : 'menuTabControls').focus();
+  }));
+  $('menuButton').onclick = showMenu; $('menuClose').onclick = closeMenu;
+  $('scorecardButton').onclick = showScorecard; $('scorecardClose').onclick = closeScorecard;
+  $('fullscreenButton').onclick = async () => {
+    try { document.fullscreenElement ? await document.exitFullscreen() : await $('stadium').requestFullscreen(); }
+    catch { toast('The game already fills the browser window. Fullscreen is unavailable in this browser.'); }
+  };
+  document.addEventListener('fullscreenchange', () => $('fullscreenButton').setAttribute('aria-pressed', String(!!document.fullscreenElement)));
+  document.addEventListener('visibilitychange', () => { pauseFor('background', document.visibilityState === 'hidden'); render(); if (document.visibilityState === 'visible') schedulePlay(); });
   $('resumeButton').onclick = () => {
     const saved = safeRead('pocket-cricket-save-v1', null);
     try {
       if (!saved || !['cpu', 'local'].includes(saved.mode) || !saved.match || !['playing', 'innings-break'].includes(saved.match.phase)) throw new Error('No saved match.');
       Engine.createMatch({names: saved.match.players, overs: saved.match.overs, wickets: saved.match.wicketLimit, batFirst: saved.match.batter});
-      resetGame(); setMode(saved.mode); match = saved.match; render();
+      resetGame(); closePanels(); setMode(saved.mode); match = saved.match; render();
       if (mode === 'local' && match.phase === 'playing') localHandoff(startAutomaticBall);
       else if (mode === 'cpu' && match.phase === 'playing' && amBatting()) later(startAutomaticBall, 750);
     } catch { safeWrite('pocket-cricket-save-v1', null); toast('Saved match could not be restored. Start a fresh match.'); render(); }
   };
   window.addEventListener('beforeunload', () => room?.leave());
   updateSound(); render();
+  updateShotReadout(pitch.shotAim || {angle: -Math.PI / 2, power: .7});
+  showMenu();
   const invite = new URLSearchParams(location.search).get('room');
   if (invite && /^[A-Z2-9]{6,8}$/.test(invite.toUpperCase())) { setMode('online'); $('roomInput').value = invite.toUpperCase(); toast('Enter your team name, then Join your friend’s room.'); }
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('./sw.js').catch(() => {});
