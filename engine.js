@@ -1,8 +1,8 @@
 (function (root) {
   'use strict';
   const clone = value => JSON.parse(JSON.stringify(value));
-  const durations = { pace: 1900, spin: 2250, yorker: 1750 };
-  const releases = {pace: 780, spin: 840, yorker: 740};
+  const durations = { pace: 2220, spin: 2570, yorker: 2070 };
+  const releases = {pace: 1100, spin: 1160, yorker: 1060};
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
   const geometry = {width: 720, height: 380, center: {x: 360, y: 218}, contact: {x: 360, y: 280}, boundary: {rx: 304, ry: 145}};
   const fielderPositions = [

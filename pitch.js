@@ -34,7 +34,7 @@
       this.onBowl = callbacks.onBowl || (() => {});
       this._bowlingMode = false;
       this._bowlingDragging = false;
-      this._bowlingAim = { type: 'pace', line: 0, length: .6, speed: .65 };
+      this._bowlingAim = { type: 'pace', line: 0, length: .18, speed: .65 };
       this._aim = 0;
       this._angle = -Math.PI / 2;
       this._power = .76;
@@ -52,7 +52,7 @@
       this._elapsed = 0;
       this._start = 0;
       this._duration = 1900;
-      this._releaseAt = 780;
+      this._releaseAt = 1100;
       this._interactive = true;
       this._frameId = null;
       this._destroyed = false;
@@ -153,8 +153,8 @@
       this._sceneDelivery = this._delivery;
       this._fielders = window.CricketEngine?.fielders?.(this._delivery.seed || 0) || FIELDERS;
       const engineDuration = window.CricketEngine?.deliveryDuration?.(this._delivery.type, this._delivery.speed);
-      this._duration = Number.isFinite(engineDuration) && engineDuration > 0 ? engineDuration : ({ pace: 1900, spin: 2250, yorker: 1750 }[this._delivery.type]);
-      this._releaseAt = { pace: 780, spin: 840, yorker: 740 }[this._delivery.type];
+      this._duration = Number.isFinite(engineDuration) && engineDuration > 0 ? engineDuration : ({ pace: 2220, spin: 2570, yorker: 2070 }[this._delivery.type]);
+      this._releaseAt = { pace: 1100, spin: 1160, yorker: 1060 }[this._delivery.type];
       this._interactive = options.interactive !== false;
       this._shot = null;
       this._result = null;
@@ -186,7 +186,7 @@
     setBowlingType(type) {
       if (!['pace', 'spin', 'yorker'].includes(type)) return;
       this._bowlingAim.type = type;
-      this.setBowlingAim({ length: { pace: .6, spin: .35, yorker: .95 }[type] });
+      this.setBowlingAim({ length: { pace: .18, spin: .35, yorker: .95 }[type] });
     }
 
     setBowlingAim(aim = {}) {
@@ -461,13 +461,13 @@
 
     deliveryPhase(elapsed = this._elapsed) {
       const type=this._sceneDelivery?.type || this._bowlingAim.type;
-      const releaseAt={pace:780,spin:840,yorker:740}[type];
+      const releaseAt={pace:1100,spin:1160,yorker:1060}[type];
       const runEnd=releaseAt*.59,gatherEnd=releaseAt*.75,plantEnd=releaseAt*.87;
       const t=Math.max(0,elapsed),scale=1.02;
       let phase,bodyY,stride=0,rightElbow,rightHand,leftElbow,leftHand,frontFoot;
       const rightShoulder={x:4.6,y:-7};
       if(t<runEnd){
-        phase='run-up';const p=t/runEnd;bodyY=lerp(104,133,smooth(p));stride=Math.sin(p*Math.PI*6)*.82;
+        phase='run-up';const p=t/runEnd;bodyY=lerp(104,133,smooth(p));stride=Math.sin(t*.014+.35)*.82;
         rightElbow={x:7.2,y:1+stride*2};rightHand={x:7.7,y:6.7+stride*4};
         leftElbow={x:-7.1,y:1-stride*2};leftHand={x:-7.7,y:6.7-stride*4};
         frontFoot={x:-3.5-stride*3.4,y:21-stride*1.7};

@@ -2,14 +2,14 @@
 
 A fullscreen arcade cricket game for desktop and mobile browsers. The stadium fills the viewport; match settings, scorecard, help and multiplayer rooms open as in-game overlays. No build tools, account, database, or paid backend required.
 
-The compact scoreboard and controls fit the visible browser viewport, including mobile browser bars. The Match and Controls tabs keep setup and instructions inside the stadium. The canvas draws proportionate players, cricket equipment, textured turf, stands, lighting and animated fielding locally.
+The compact scoreboard and controls fit the visible browser viewport, including mobile browser bars. The Match and Controls tabs keep setup and instructions inside the stadium. The perspective canvas uses a camera behind the bowler while bowling, a camera behind the striker while batting, and a wider field camera after contact. Characters have front, back and profile poses, faces and equipment; fielders face the striking end until chasing a ball.
 
 ## Play
 
 - **Aim:** move the mouse around the batter. The direction from the bat to your cursor chooses any shot angle around the field. The arrow and reticle preview it. On touch screens, tap your target on the field. **← / →** also rotate your aim.
 - **Power:** cursor distance from the bat sets power. Close targets make safer grounded drives or cuts; distant targets make stronger lofted shots. Hold the mouse, touch, or **Space** to add a power boost, then release.
 - **Bat:** click or release as the ball arrives at the bat. The green timing zone helps. Timing, power, direction and actual fielders determine runs, boundaries and catches. A weak shot cannot become six just because it is perfectly timed.
-- **Bowl:** choose **Pace**, **Spin**, or **Yorker**, then aim the landing target directly on the pitch. Drag downward for more speed and release to bowl. A tap bowls at the current speed. **Space** or **BOWL** also delivers to the current target; arrow keys adjust line and length. Delivery type, target and power affect bounce, movement, timing and whether a missed ball threatens the stumps.
+- **Bowl:** tap a **Bouncer**, **Spin**, or **Yorker** delivery card to start the run-up. Bouncer uses the pace delivery with a short landing length. You can first aim the landing target on the pitch; drag downward for more speed and release to bowl directly. **Space** or **BOWL** also delivers to the current target; arrow keys adjust line and length. Delivery type, target and power affect bounce, movement, timing and whether a missed ball threatens the stumps.
 - **Match:** two innings, 3 wickets per team, and your choice of 1, 2, or 5 overs. Six balls per over. A chase ends immediately when the target is reached; equal final scores are a tie.
 - **Game menu:** press **Escape** or the menu icon. Settings, new matches, rooms, save/resume, help, sound and scorecards stay inside the game. The page has no outside links or scrolling. **P** pauses offline play, including an incoming ball. Offline play pauses while a menu/scorecard is open or the tab is hidden; online matches keep running for both players. The fullscreen icon uses browser fullscreen when supported.
 - **Solo:** bat and bowl against the computer.
@@ -34,7 +34,7 @@ Publish the repository's `main` branch, root folder, under **Settings → Pages 
 
 ## Files
 
-`index.html` interface · `styles.css` styling · `pitch.js` animated field · `engine.js` match rules · `app.js` controls and computer · `online.js` multiplayer · `sw.js` offline cache · `serve.py` optional Python server.
+`index.html` interface · `styles.css` styling · `pitch.js` delivery animation · `presentation.js` perspective camera and directional characters · `engine.js` match rules · `app.js` controls and computer · `online.js` multiplayer · `sw.js` offline cache · `serve.py` optional Python server.
 
 The bundled PeerJS library is MIT licensed; its license is included in `peerjs.LICENSE`.
 

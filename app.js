@@ -86,7 +86,7 @@
     $('powerFill').style.width = `${Math.round(speed * 100)}%`;
     $('powerValue').textContent = `${Math.round(speed * 100)}%`;
     $('powerFill').classList.remove('charging');
-    $('shotName').textContent = `${label} · ${selectedBowlingType.toUpperCase()}`;
+    $('shotName').textContent = `${label} · ${selectedBowlingType === 'pace' && length < .3 ? 'BOUNCER' : selectedBowlingType.toUpperCase()}`;
     $('shotAngle').textContent = line < -.2 ? 'LEG' : line > .2 ? 'OFF' : 'MIDDLE';
   }
   function toast(text) { clearTimeout(toastTimer); $('toast').textContent = text; $('toast').hidden = false; toastTimer = setTimeout(() => $('toast').hidden = true, 4200); }
@@ -158,6 +158,7 @@
     const score = view.scores[view.batter];
     $('targetLine').textContent = !match ? 'The pitch is yours. Start a match to play.' : view.phase === 'finished' ? Engine.resultText(view) : view.target ? `${view.players[view.batter]} need ${Math.max(0, view.target - score.runs)} runs from ${Math.max(0, view.overs * 6 - score.balls)} balls · Target ${view.target}` : `${view.players[view.batter]} are setting the target · ${view.wicketLimit - score.wickets} wickets left`;
     const batting = !match || amBatting();
+    pitch.setPresentationRole?.(batting ? 'batting' : 'bowling');
     $('stadium').classList.toggle('bowling-role', !batting);
     $('shotPanelTitle').textContent = batting ? 'YOUR SHOT' : 'YOUR DELIVERY';
     $('pauseButton').hidden = !match || mode === 'online' || view.phase !== 'playing';
@@ -175,9 +176,9 @@
     $('newMatchButton').hidden = !match;
     $('newMatchButton').textContent = view.phase === 'finished' ? 'New match' : 'End match';
     $('rolePill').textContent = !match ? 'YOUR CREASE' : batting ? 'BATTING' : 'BOWLING';
-    $('playTitle').textContent = !match ? 'Welcome to the crease' : view.phase === 'finished' ? 'Match complete' : view.phase === 'innings-break' ? 'Innings break' : paused ? 'Match paused' : busy ? batting ? 'Watch the ball. Release your shot.' : 'Delivery in play' : batting ? mode === 'online' ? 'Waiting for the bowler' : 'Next delivery coming up' : bowlingPending ? 'Sending your delivery…' : 'Aim on the pitch. Drag & release.';
-    $('playDescription').textContent = !match ? 'Open the in-game menu to start a match.' : view.phase === 'finished' ? 'View the scorecard or play a rematch.' : view.phase === 'innings-break' ? `${view.players[1 - view.batter]} chase ${score.runs + 1}.` : paused ? 'Resume play when you are ready.' : busy ? batting ? 'Click when the ball reaches the bat. Aim away from fielders.' : 'The batter controls this shot.' : batting ? mode === 'online' ? 'Your friend chooses the next delivery.' : 'Automatic bowling — stay ready.' : 'Place the target. Pull down for more pace. Release to bowl.';
-    $('controlHint').textContent = batting ? 'Move to aim · Farther cursor = more power · Click to hit' : 'Pitch: aim · Drag down: power · Release: bowl · Space: bowl';
+    $('playTitle').textContent = !match ? 'Welcome to the crease' : view.phase === 'finished' ? 'Match complete' : view.phase === 'innings-break' ? 'Innings break' : paused ? 'Match paused' : busy ? batting ? 'Watch the ball. Release your shot.' : 'Delivery in play' : batting ? mode === 'online' ? 'Waiting for the bowler' : 'Next delivery coming up' : bowlingPending ? 'Sending your delivery…' : 'Pick a delivery card to bowl.';
+    $('playDescription').textContent = !match ? 'Open the in-game menu to start a match.' : view.phase === 'finished' ? 'View the scorecard or play a rematch.' : view.phase === 'innings-break' ? `${view.players[1 - view.batter]} chase ${score.runs + 1}.` : paused ? 'Resume play when you are ready.' : busy ? batting ? 'Click when the ball reaches the bat. Aim away from fielders.' : 'The batter controls this shot.' : batting ? mode === 'online' ? 'Your friend chooses the next delivery.' : 'Automatic bowling — stay ready.' : 'Tap Bouncer, Spin or Yorker. Aim on the pitch to adjust your target.';
+    $('controlHint').textContent = batting ? 'Move to aim · Farther cursor = more power · Click to hit' : 'Tap a card: bowl · Pitch: target & power · Space: repeat delivery';
     $('inputHint').textContent = batting ? 'HOLD FOR EXTRA POWER · RELEASE TO STRIKE' : 'AIM ON PITCH · DRAG DOWN · RELEASE';
     if (match && !busy) {
       if (view.phase === 'innings-break') { $('nextButton').textContent = 'Start the chase →'; $('nextButton').disabled = mode === 'online' && !room?.isHost; }
@@ -343,7 +344,7 @@
     if (button.disabled) return;
     selectedBowlingType = button.dataset.delivery;
     pitch.setBowlingType?.(selectedBowlingType);
-    render();
+    dispatchBowl(pitch.bowlingAim);
   });
   async function dispatchBowl(aim = pitch.bowlingAim) {
     if (!match || busy || bowlingPending || paused || panelOpen() || document.visibilityState === 'hidden' || amBatting() || match.phase !== 'playing' || (mode === 'online' && !connected)) return;

@@ -68,3 +68,19 @@
 @media(max-width:690px){.bowling-role .bowling-controls{grid-template-columns:repeat(3,minmax(0,1fr)) 61px}}
 @media(max-width:380px){.bowling-role .bowling-controls{grid-template-columns:repeat(3,minmax(0,1fr)) 55px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
+
+/* Delivery cards sit inside the stadium, below the perspective camera. */
+.delivery-art{display:block;font-size:24px;font-weight:900;line-height:1;color:#fff6d3;text-shadow:0 2px 0 #17395a}
+.bowling-role .delivery-button{height:76px;min-height:76px;border:2px solid #b6c9ea;border-radius:10px;background:linear-gradient(#36a9c9,#2865a8);box-shadow:0 4px 0 #173e70;gap:3px;justify-content:center}
+.bowling-role .delivery-button[data-delivery="spin"]{background:linear-gradient(#c363d7,#7449b3)}
+.bowling-role .delivery-button[data-delivery="yorker"]{background:linear-gradient(#f7a149,#bc533f)}
+.bowling-role .delivery-button strong{font-size:14px;color:#fffbea;text-shadow:0 1px 2px #182b50}
+.bowling-role .delivery-button small{display:block;font-size:8px;color:#f4eacc;font-weight:700;letter-spacing:.6px}
+.bowling-role .delivery-button[aria-pressed="true"]{border-color:#ffe96d;box-shadow:0 4px 0 #716622,0 0 0 2px #ffe96d44;transform:translateY(-3px)}
+.bowling-role .bowl-button{height:72px;min-height:72px;border:3px solid #ffef8b;border-radius:50%;background:linear-gradient(#f6da5a,#de9a24);color:#402b16;box-shadow:0 4px 0 #8d581e}
+.bowling-role .bowl-button strong{font-size:17px}.bowling-role .bowl-button small{color:#70501d}
+.bowling-role .bottom-hud{background:#102a48ec;border-color:#77a2c966;border-radius:16px}.bowling-role .play-heading h1{color:#fff1b6}
+.score-hud{background:linear-gradient(135deg,#14385de8,#152443f2);border-color:#6f9fc48c;border-bottom:3px solid #e8cf65}
+.team-score.active .score{color:#ffe26f}.team-label span{background:#f0cf55;color:#173b5c}
+@media(max-width:690px){.bowling-role .delivery-button{height:57px;min-height:57px;padding:4px 2px;gap:2px;border-radius:7px}.delivery-art{font-size:19px}.bowling-role .delivery-button strong{font-size:10px}.bowling-role .delivery-button small{font-size:6px;letter-spacing:0}.bowling-role .bowl-button{height:54px;min-height:54px}.bowling-role .bowl-button strong{font-size:12px}.bowling-role .play-heading h1{font-size:13px}.bowling-role .play-panel{padding-top:0}}
+@media(max-height:480px){.bowling-role .delivery-button{height:48px;min-height:48px}.delivery-art{font-size:17px}.bowling-role .delivery-button small{display:none}.bowling-role .delivery-button strong{font-size:10px}.bowling-role .bowl-button{height:46px;min-height:46px}.bowling-role .play-heading{display:none}}
