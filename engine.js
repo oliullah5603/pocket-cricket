@@ -68,7 +68,7 @@
     }
     const power = delivery.power === undefined ? .8 : delivery.power;
     if (!validAngle(angle) || !validPower(power)) throw new Error('Invalid shot direction or power.');
-    const windowMs = {pace: 190, spin: 220, yorker: 160}[type] * (1.26 - .4 * bowling.speed);
+    const windowMs = {pace: 380, spin: 440, yorker: 320}[type] * (1.26 - .4 * bowling.speed);
     const quality = timing === null ? 0 : Math.max(0, 1 - Math.abs(timing) / windowMs);
     const onStumps = Math.abs(bowling.line) < .72 && bowling.length >= .35 && seed % 10 < 8;
     const shot = shotName(angle, power);

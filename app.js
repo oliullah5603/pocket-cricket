@@ -25,7 +25,7 @@
   const pitch = new CricketPitch($('pitchCanvas'), {
     onSwing: shot => receiveSwing(shot),
     onFinish: () => finishBall(),
-    onProgress: progress => { $('timingCursor').style.left = `${Math.min(100, Math.max(0, progress * 85))}%`; },
+    onProgress: (progress, info = {}) => { $('timingCursor').style.left = `${Math.min(100, Math.max(0, progress * 85))}%`; $('stadium').dataset.timing = info.cue || ''; $('timingHint').textContent = info.cue === 'hit' ? 'HIT NOW!' : info.cue === 'runup' ? 'BOWLER RUNNING IN' : 'WATCH THE BALL'; },
     onAim: updateShotReadout,
     onBowlAim: updateBowlingReadout,
     onBowl: aim => dispatchBowl(aim),
@@ -42,7 +42,7 @@
     if (paused) { spaceHeld = false; pitch.setBowlingMode?.(false); pitch.pause?.(); }
     else pitch.resume?.();
   }
-  function schedulePlay() { if (match?.phase === 'playing' && mode !== 'online' && amBatting() && !busy && !paused && !panelOpen()) later(startAutomaticBall, 800); }
+  function schedulePlay() { /* Offline batters explicitly request the next ball. */ }
   function selectMenuTab(tab) {
     menuTab = tab;
     for (const name of ['match', 'controls']) {
@@ -164,20 +164,22 @@
     $('pauseButton').hidden = !match || mode === 'online' || view.phase !== 'playing';
     $('pauseButton').textContent = paused ? 'Resume play' : 'Pause';
     $('battingControls').hidden = !batting; $('bowlingControls').hidden = batting || !match || view.phase !== 'playing';
-    $('swingButton').disabled = !match || !busy || !batting || paused || (mode === 'online' && !connected);
+    $('swingButton').disabled = !match || !batting || paused || view.phase !== 'playing' || (mode === 'online' && (!connected || !busy));
+    $('swingButton').innerHTML = busy ? '<strong>HIT</strong><small>SPACE</small>' : '<strong>NEXT BALL</strong><small>SPACE</small>';
+    if (!busy) { $('stadium').dataset.timing = ''; $('timingHint').textContent = mode === 'online' ? 'WAIT FOR YOUR FRIEND' : 'START WHEN YOU ARE READY'; }
     $('aimLeft').disabled = $('aimRight').disabled = !match || !batting || paused || view.phase !== 'playing' || (mode === 'online' && !connected);
     const canBowl = !!match && !batting && !busy && !bowlingPending && !paused && !panelOpen() && document.visibilityState !== 'hidden' && view.phase === 'playing' && (mode !== 'online' || connected);
     document.querySelectorAll('[data-delivery]').forEach(b => { b.disabled = !canBowl; b.setAttribute('aria-pressed', String(b.dataset.delivery === selectedBowlingType)); });
     $('bowlButton').disabled = !canBowl;
     pitch.setBowlingMode?.(canBowl);
     if (canBowl) $('outcomeBadge').hidden = true;
-    if (!batting) updateBowlingReadout(busy ? currentDelivery : pitch.bowlingAim);
+    if (!batting) updateBowlingReadout(busy ? currentDelivery : pitch.bowlingAim); else updateShotReadout(pitch.shotAim);
     $('nextButton').hidden = !match || busy;
     $('newMatchButton').hidden = !match;
     $('newMatchButton').textContent = view.phase === 'finished' ? 'New match' : 'End match';
     $('rolePill').textContent = !match ? 'YOUR CREASE' : batting ? 'BATTING' : 'BOWLING';
-    $('playTitle').textContent = !match ? 'Welcome to the crease' : view.phase === 'finished' ? 'Match complete' : view.phase === 'innings-break' ? 'Innings break' : paused ? 'Match paused' : busy ? batting ? 'Watch the ball. Release your shot.' : 'Delivery in play' : batting ? mode === 'online' ? 'Waiting for the bowler' : 'Next delivery coming up' : bowlingPending ? 'Sending your delivery…' : 'Pick a delivery card to bowl.';
-    $('playDescription').textContent = !match ? 'Open the in-game menu to start a match.' : view.phase === 'finished' ? 'View the scorecard or play a rematch.' : view.phase === 'innings-break' ? `${view.players[1 - view.batter]} chase ${score.runs + 1}.` : paused ? 'Resume play when you are ready.' : busy ? batting ? 'Click when the ball reaches the bat. Aim away from fielders.' : 'The batter controls this shot.' : batting ? mode === 'online' ? 'Your friend chooses the next delivery.' : 'Automatic bowling — stay ready.' : 'Tap Bouncer, Spin or Yorker. Aim on the pitch to adjust your target.';
+    $('playTitle').textContent = !match ? 'Welcome to the crease' : view.phase === 'finished' ? 'Match complete' : view.phase === 'innings-break' ? 'Innings break' : paused ? 'Match paused' : busy ? batting ? 'Watch the ball. Release your shot.' : 'Delivery in play' : batting ? mode === 'online' ? 'Waiting for the bowler' : 'Ready for the next ball?' : bowlingPending ? 'Sending your delivery…' : 'Pick a delivery card to bowl.';
+    $('playDescription').textContent = !match ? 'Open the in-game menu to start a match.' : view.phase === 'finished' ? 'View the scorecard or play a rematch.' : view.phase === 'innings-break' ? `${view.players[1 - view.batter]} chase ${score.runs + 1}.` : paused ? 'Resume play when you are ready.' : busy ? batting ? 'Click when the ball reaches the bat. Aim away from fielders.' : 'The batter controls this shot.' : batting ? mode === 'online' ? 'Your friend chooses the next delivery.' : 'Aim first. Press NEXT BALL or Space to start bowling.' : 'Tap Bouncer, Spin or Yorker. Aim on the pitch to adjust your target.';
     $('controlHint').textContent = batting ? 'Move to aim · Farther cursor = more power · Click to hit' : 'Tap a card: bowl · Pitch: target & power · Space: repeat delivery';
     $('inputHint').textContent = batting ? 'HOLD FOR EXTRA POWER · RELEASE TO STRIKE' : 'AIM ON PITCH · DRAG DOWN · RELEASE';
     if (match && !busy) {
@@ -215,8 +217,8 @@
     closePanels();
     match = Engine.createMatch({names: [playerName(), mode === 'local' ? $('friendName').value.trim() || 'Player 2' : 'Computer'], ...settings()});
     saveMatch(); render();
-    if (mode === 'local') localHandoff(() => startAutomaticBall());
-    else if (amBatting()) showModal({title: 'You’re on strike.', description: 'Move your cursor around the batter to aim. Farther from the bat means more power. Click as the ball reaches the crease; hold and release for an extra power boost. Ground shots are safer, lofted shots can clear the rope or be caught.', primary: 'Ready to bat →', action: () => later(startAutomaticBall, 850)});
+    if (mode === 'local') localHandoff(() => render());
+    else if (amBatting()) showModal({title: 'You’re on strike.', description: 'Aim with your mouse, then press NEXT BALL or Space when ready. Watch the ball and click HIT when the green HIT NOW cue appears. Move farther from the bat for more power. Low power keeps the ball on the ground.', primary: 'Ready to bat →', action: () => render()});
   }
   function localHandoff(action) {
     showModal({title: `${match.players[match.batter]}, you’re up.`, description: 'Pass the device to the batter. Face the automatic bowler, time your swings, and set a score for your friend to beat.', primary: 'Ready to bat →', action});
@@ -257,7 +259,7 @@
     } catch (error) { toast(error.message); }
   }
   function finishBall() {
-    busy = false; currentDelivery = null;
+    busy = false; currentDelivery = null; pitch.reset();
     if (pendingMatch) { match = pendingMatch; pendingMatch = null; }
     if (!match) return;
     const last = match.lastBall;
@@ -280,13 +282,13 @@
       showModal({title: match.winner === -1 ? 'What a match. It’s a tie!' : `${match.players[match.winner]} take the win!`, description: `${Engine.resultText(match)} Final score: ${match.players[0]} ${match.scores[0].runs}/${match.scores[0].wickets} — ${match.players[1]} ${match.scores[1].runs}/${match.scores[1].wickets}.`, icon: '🏆', primary: mode === 'online' ? 'Request rematch ↗' : 'One more match ↗', action: playAgain, secondary: 'View scorecard', cancel: showScorecard});
     } else if (match.phase === 'innings-break') {
       toast(`Innings over! ${match.players[1 - match.batter]} need ${match.scores[match.batter].runs + 1} to win.`);
-    } else if (mode !== 'online' && amBatting() && !paused) later(startAutomaticBall, 1350);
+    }
   }
   function continueInnings() {
     if (mode === 'online') { room.continueInnings(); return; }
     match = Engine.startNextInnings(match); pitch.reset(); $('outcomeBadge').hidden = true; saveMatch(); render();
-    if (mode === 'local') localHandoff(startAutomaticBall);
-    else if (amBatting()) later(startAutomaticBall, 500);
+    if (mode === 'local') localHandoff(() => render());
+    else render();
   }
   function playAgain() {
     if (mode === 'online') {
@@ -362,9 +364,9 @@
     pitch.setShotAim({angle, power: aim.power});
   }
   $('aimLeft').onclick = () => changeAim(-.15); $('aimRight').onclick = () => changeAim(.15);
-  $('swingButton').onclick = () => { if (!$('swingButton').disabled) pitch.swing(); };
-  $('swingButton').onpointerdown = event => { if (!$('swingButton').disabled) { event.preventDefault(); $('swingButton').setPointerCapture(event.pointerId); pitch.startCharge(); } };
-  $('swingButton').onpointerup = event => { if (!$('swingButton').disabled) { event.preventDefault(); pitch.releaseShot(); } };
+  $('swingButton').onclick = () => { if (!$('swingButton').disabled) { if (!busy && mode !== 'online') startAutomaticBall(); else pitch.swing(); } };
+  $('swingButton').onpointerdown = event => { if (!$('swingButton').disabled && busy) { event.preventDefault(); $('swingButton').setPointerCapture(event.pointerId); pitch.startCharge(); } };
+  $('swingButton').onpointerup = event => { if (!$('swingButton').disabled && busy) { event.preventDefault(); pitch.releaseShot(); } };
   $('swingButton').onpointercancel = () => pitch.cancelCharge?.();
   function trapFocus(event, panel) {
     if (event.key !== 'Tab') return;
@@ -384,7 +386,7 @@
     if (event.key === 'Escape') { event.preventDefault(); showMenu(); return; }
     if (['INPUT', 'SELECT', 'TEXTAREA'].includes(event.target.tagName) || event.repeat || !match) return;
     if (event.code === 'Space' && !$('bowlButton').disabled) { event.preventDefault(); dispatchBowl(); }
-    else if (event.code === 'Space' && !$('swingButton').disabled) { event.preventDefault(); spaceHeld = pitch.startCharge(); }
+    else if (event.code === 'Space' && !$('swingButton').disabled) { event.preventDefault(); if (!busy && mode !== 'online') startAutomaticBall(); else spaceHeld = pitch.startCharge(); }
     else if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key) && !$('bowlButton').disabled) {
       event.preventDefault();
       const aim = Engine.bowlingOptions(pitch.bowlingAim);
@@ -432,8 +434,8 @@
       if (!saved || !['cpu', 'local'].includes(saved.mode) || !saved.match || !['playing', 'innings-break'].includes(saved.match.phase)) throw new Error('No saved match.');
       Engine.createMatch({names: saved.match.players, overs: saved.match.overs, wickets: saved.match.wicketLimit, batFirst: saved.match.batter});
       resetGame(); closePanels(); setMode(saved.mode); match = saved.match; render();
-      if (mode === 'local' && match.phase === 'playing') localHandoff(startAutomaticBall);
-      else if (mode === 'cpu' && match.phase === 'playing' && amBatting()) later(startAutomaticBall, 750);
+      if (mode === 'local' && match.phase === 'playing') localHandoff(() => render());
+      else render();
     } catch { safeWrite('pocket-cricket-save-v1', null); toast('Saved match could not be restored. Start a fresh match.'); render(); }
   };
   window.addEventListener('beforeunload', () => room?.leave());

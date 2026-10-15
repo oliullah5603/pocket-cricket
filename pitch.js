@@ -412,9 +412,9 @@
       this._frameId = null;
       if (!this.active || this._destroyed || this._paused) return;
       this._elapsed = now - this._start;
-      this.onProgress(clamp(this._elapsed / this._duration, 0, 1));
+      this.onProgress(clamp((this._elapsed - this._releaseAt) / (this._duration - this._releaseAt), 0, 1.17), {cue: this._shot ? 'result' : this._elapsed < this._releaseAt ? 'runup' : Math.abs(this._elapsed-this._duration) < 200 ? 'hit' : 'wait'});
       if (this._charging) this.onCharge({ power: this._effectivePower(), charging: true });
-      if (!this._shot && this._interactive && this._elapsed >= this._duration + 220) {
+      if (!this._shot && this._interactive && this._elapsed >= this._duration + 460) {
         const shot = { timing: null, aim: this._aim, angle: this._angle, power: this._effectivePower() };
         this._cancelCharge();
         this._releasePointer();

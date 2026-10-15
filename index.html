@@ -8,13 +8,13 @@
   <title>Pocket Cricket</title>
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="stylesheet" href="styles.css?v=6">
-  <script defer src="engine.js?v=6"></script>
+  <link rel="stylesheet" href="styles.css?v=7">
+  <script defer src="engine.js?v=7"></script>
   <script defer src="peerjs.min.js"></script>
-  <script defer src="online.js?v=6"></script>
-  <script defer src="pitch.js?v=6"></script>
-  <script defer src="presentation.js?v=6"></script>
-  <script defer src="app.js?v=6"></script>
+  <script defer src="online.js?v=7"></script>
+  <script defer src="pitch.js?v=7"></script>
+  <script defer src="presentation.js?v=7"></script>
+  <script defer src="app.js?v=7"></script>
 </head>
 <body>
   <main class="game-shell" id="stadium" aria-label="Pocket Cricket game">
@@ -50,7 +50,7 @@
       <div class="play-panel">
         <div class="play-heading"><div><h1 id="playTitle">Ready for the first ball?</h1><p id="playDescription">Open the menu and start a match.</p></div><span class="role-pill" id="rolePill">YOUR CREASE</span></div>
         <div class="play-row">
-          <div class="timing-meter" aria-label="Ball timing"><div class="timing-track"><span class="timing-sweet"></span><i class="timing-cursor" id="timingCursor"></i></div><div class="timing-labels"><span>BALL APPROACHING</span><span>HIT ZONE</span></div></div>
+          <div class="timing-meter" aria-label="Ball timing"><div class="timing-track"><span class="timing-sweet"></span><i class="timing-cursor" id="timingCursor"></i></div><div class="timing-labels"><span id="timingHint">START WHEN YOU ARE READY</span><span>HIT ZONE</span></div></div>
           <div class="control-row"><div class="batting-controls" id="battingControls"><button class="aim-button" id="aimLeft" aria-label="Aim left" disabled>↖</button><button class="swing-button" id="swingButton" disabled><strong>HIT</strong><small>SPACE</small></button><button class="aim-button" id="aimRight" aria-label="Aim right" disabled>↗</button></div><div class="bowling-controls" id="bowlingControls" aria-label="Choose a delivery, then bowl" hidden><button class="delivery-button selected" data-delivery="pace" aria-label="Select pace delivery" aria-pressed="true"><span class="delivery-art pace-art" aria-hidden="true">↗</span><strong>BOUNCER</strong><small>SHORT BALL</small></button><button class="delivery-button" data-delivery="spin" aria-label="Select spin delivery" aria-pressed="false"><span class="delivery-art spin-art" aria-hidden="true">↻</span><strong>SPIN</strong><small>TURNING BALL</small></button><button class="delivery-button" data-delivery="yorker" aria-label="Select yorker delivery" aria-pressed="false"><span class="delivery-art yorker-art" aria-hidden="true">◎</span><strong>YORKER</strong><small>AT THE TOES</small></button><button class="bowl-button" id="bowlButton" aria-label="Bowl the selected delivery" disabled><strong>BOWL</strong><small>SPACE</small></button></div></div>
         </div>
         <p class="control-hint" id="controlHint">Mouse: aim &amp; power · Click: hit · Space: swing</p>

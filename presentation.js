@@ -15,12 +15,21 @@
   const originalBowlAim=P._bowlAimFromPointer;
   P._bowlAimFromPointer=function(event){this._bowlingScreenStart=event.clientY;originalBowlAim.call(this,event);};
   P._updateBowlDrag=function(event){this.setBowlingAim({speed:.65+(event.clientY-this._bowlingScreenStart)/110*.35});};
+  P._aimFromPointer=function(event){
+    if(this._presentationRole==='bowling')return;
+    const v=this._camera||this._cameraForScene(),r=this.canvas.getBoundingClientRect();
+    const origin=this._project(360,280,.85);if(!origin)return;
+    const dx=(event.clientX-r.left)*v.width/r.width-origin.x,dy=(event.clientY-r.top)*v.height/r.height-origin.y;
+    const distance=Math.hypot(dx,dy);if(distance<12)return;
+    const groundX=v.right[0]*dx-v.forward[0]*dy,groundY=v.right[2]*dx-v.forward[2]*dy;
+    this.setShotAim({angle:Math.atan2(groundY/.18,groundX/.13),power:clamp(distance/Math.min(v.width*.38,v.space*.8),.15,1)});
+  };
   P._cameraForScene=function(){
     const width=this._view.width,height=this._view.height,root=this.canvas.parentElement;
     const rect=this.canvas.getBoundingClientRect(),header=root?.querySelector('.top-hud')?.getBoundingClientRect(),hud=root?.querySelector('.bottom-hud')?.getBoundingClientRect();
     const top=Math.max(35,header?.bottom-rect.top+8||70),bottom=Math.max(top+100,hud?.top-rect.top-8||height-100),space=bottom-top;
     const bowling=this._presentationRole==='bowling';
-    const hit=this._shot && this._elapsed>this._hitAt+120;
+    const hit=this._shot && !this._missed && this._elapsed>this._hitAt+450;
     let eye,target,focal;
     if(hit){
       eye=[13,36,bowling?-43:43];target=[0,0,1];focal=Math.min(space*1.22,width*.72);
@@ -112,7 +121,7 @@
     const c=this.ctx,ppm=clamp(p.scale,2,100),bowler=actor.bowler;
     const target=actor.target||{x:360,y:280},fw=norm([(target.x-actor.x)*.13,0,(target.y-actor.y)*.18]);
     const aw=world(actor.x,actor.y),towardCamera=norm([this._camera.eye[0]-aw[0],0,this._camera.eye[2]-aw[2]]);
-    const front=dot(fw,towardCamera),side=dot(fw,this._camera.right),back=front<-.9,bodyBack=front<-.15;
+    const front=dot(fw,towardCamera),side=dot(fw,this._camera.right),back=front<-.35,bodyBack=front<-.15;
     const stride=actor.running?Math.sin(this._elapsed*.014+(bowler?.35:actor.index))*.35:0;
     const bob=actor.running?Math.abs(Math.sin(this._elapsed*.014))*.055:0;
     const shirt=actor.batter?'#f3c849':'#3f78db',shade=actor.batter?'#c88c28':'#244da4',skin=['#d99968','#ab6d47','#ecc19a','#ba845b'][actor.index%4];
@@ -191,7 +200,7 @@
   };
   P._perspectiveBall=function(){
     const ball=this._ballWorld();if(!ball)return;const p=this._project(ball.x,ball.y,ball.h);if(!p)return;
-    const c=this.ctx,r=clamp(p.scale*.11,3,9),ground=this._project(ball.x,ball.y,0);
+    const c=this.ctx,r=clamp(p.scale*.16,5,11),ground=this._project(ball.x,ball.y,0);
     if(ground&&['flight','hit-flight','return'].includes(ball.owner)){
       c.fillStyle='#18392555';c.beginPath();c.ellipse(ground.x,ground.y,r*1.1,r*.35,0,0,Math.PI*2);c.fill();
       const previous=this._ballWorld(this._elapsed-30);if(previous&&previous.owner===ball.owner){const q=this._project(previous.x,previous.y,previous.h);if(q){c.beginPath();c.moveTo(q.x,q.y);c.lineTo(p.x,p.y);c.strokeStyle='#fff6d19c';c.lineWidth=r*.7;c.lineCap='round';c.stroke();}}
@@ -213,10 +222,21 @@
       c.fillStyle='#102a4bcb';c.fillRect(gx,gy,13,90);c.fillStyle='#efcf4d';c.fillRect(gx+3,gy+87*(1-a.speed),7,87*a.speed);c.font='bold 11px Arial';c.fillStyle='#fff2bb';c.textAlign='center';c.fillText(`${Math.round(a.speed*100)}%`,gx+6,gy-7);
       return;
     }
-    if(!this.active||!this._interactive||this._shot)return;
-    const power=this._effectivePower(),point=window.CricketEngine.boundaryPoint(this._angle,power),p=this._project(point.x,point.y,.1);
-    if(!p||p.x<15||p.x>this._camera.width-15||p.y<this._camera.top||p.y>this._camera.bottom)return;
-    c.beginPath();c.arc(p.x,p.y,10,0,Math.PI*2);c.strokeStyle='#f7dd65';c.lineWidth=2;c.stroke();
+    if(this._shot||this.active&&!this._interactive)return;
+    const v=this._camera,p=this._project(360,280,.85);if(!p)return;
+    const power=this._effectivePower(),wx=Math.cos(this._angle)*.13,wz=Math.sin(this._angle)*.18;
+    const dx=wx*v.right[0]+wz*v.right[2],dy=-(wx*v.forward[0]+wz*v.forward[2]),length=Math.hypot(dx,dy)||1;
+    const radius=Math.min(v.width*.28,v.space*.42)*(.45+power*.55),ex=p.x+dx/length*radius,ey=p.y+dy/length*radius;
+    c.save();c.globalAlpha=.8;c.strokeStyle=power>.7?'#ffdc62':'#a5ffb0';c.fillStyle=c.strokeStyle;c.lineWidth=4;
+    c.beginPath();c.moveTo(p.x,p.y);c.lineTo(ex,ey);c.stroke();
+    const angle=Math.atan2(ey-p.y,ex-p.x);c.beginPath();c.moveTo(ex,ey);c.lineTo(ex-Math.cos(angle-.5)*14,ey-Math.sin(angle-.5)*14);c.lineTo(ex-Math.cos(angle+.5)*14,ey-Math.sin(angle+.5)*14);c.closePath();c.fill();c.restore();
+    if(!this.active)return;
+    const cue=!this._shot&&Math.abs(this._elapsed-this._duration)<200;
+    const strike=this._project(this._contactPoint().x,280,.85);if(!strike)return;
+    c.strokeStyle=cue?'#b4ff63':'#ffffff8c';c.lineWidth=cue?5:2;c.beginPath();c.arc(strike.x,strike.y,cue?25:18,0,Math.PI*2);c.stroke();
+    c.font=`900 ${clamp(v.width*.018,14,24)}px Arial`;c.textAlign='center';c.fillStyle=cue?'#d4ff7a':'#fff';c.strokeStyle='#102b39';c.lineWidth=4;
+    const text=this._elapsed<this._releaseAt?'WATCH THE BOWLER':cue?'HIT NOW!':'WAIT FOR THE BALL';
+    c.strokeText(text,strike.x,strike.y-40);c.fillText(text,strike.x,strike.y-40);
   };
   P._perspectiveResult=function(){
     if(!this._shot)return;

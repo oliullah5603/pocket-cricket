@@ -84,3 +84,8 @@
 .team-score.active .score{color:#ffe26f}.team-label span{background:#f0cf55;color:#173b5c}
 @media(max-width:690px){.bowling-role .delivery-button{height:57px;min-height:57px;padding:4px 2px;gap:2px;border-radius:7px}.delivery-art{font-size:19px}.bowling-role .delivery-button strong{font-size:10px}.bowling-role .delivery-button small{font-size:6px;letter-spacing:0}.bowling-role .bowl-button{height:54px;min-height:54px}.bowling-role .bowl-button strong{font-size:12px}.bowling-role .play-heading h1{font-size:13px}.bowling-role .play-panel{padding-top:0}}
 @media(max-height:480px){.bowling-role .delivery-button{height:48px;min-height:48px}.delivery-art{font-size:17px}.bowling-role .delivery-button small{display:none}.bowling-role .delivery-button strong{font-size:10px}.bowling-role .bowl-button{height:46px;min-height:46px}.bowling-role .play-heading{display:none}}
+
+/* Clear hit feedback stays beside the actual ball and on the input control. */
+#stadium[data-timing="hit"] #swingButton{background:#c5ff67;color:#183823;box-shadow:0 0 24px #baff6877;border-color:#e1ffb1}
+#stadium[data-timing="hit"] #timingHint{color:#d4ff7a;font-weight:900}
+#swingButton strong{white-space:nowrap;font-size:13px}

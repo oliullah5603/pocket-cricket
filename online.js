@@ -5,7 +5,7 @@
 (function (global) {
   'use strict';
 
-  const PROTOCOL = 'pocket-cricket-v3';
+  const PROTOCOL = 'pocket-cricket-v4';
   const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   const DELIVERY_TYPES = ['pace', 'spin', 'yorker'];
   const clone = value => JSON.parse(JSON.stringify(value));

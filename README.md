@@ -38,3 +38,6 @@ Publish the repository's `main` branch, root folder, under **Settings → Pages 
 
 The bundled PeerJS library is MIT licensed; its license is included in `peerjs.LICENSE`.
 
+
+### Batting readiness and timing
+Offline batting waits for NEXT BALL (or Space) before every delivery. Aim direction and power are relative to cursor distance on screen. The ball is larger, flight timing is shown beside the crease and input, and casual timing windows are wider. Misses keep the batting camera. Successful hits switch to the field view after contact. Online v4 rooms keep both players on the same scoring rules.
