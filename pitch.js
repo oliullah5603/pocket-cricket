@@ -90,10 +90,7 @@
         if (!this.active || !this._interactive || this._shot) return;
         event.preventDefault();
         this._aimFromPointer(event);
-        if (this.startCharge()) {
-          this._pointerId = event.pointerId;
-          try { canvas.setPointerCapture(event.pointerId); } catch (_) { /* Capture can be unavailable on synthetic events. */ }
-        }
+        this.releaseShot();
       };
       this._pointerUp = event => {
         if (this._pointerId !== event.pointerId) return;
@@ -134,6 +131,7 @@
     }
 
     get active() { return this._delivery !== null; }
+    get canSwing() { return this.active && !this._paused && this._interactive && !this._shot; }
     get paused() { return this._paused; }
     get bowlingAim() { return { ...this._bowlingAim }; }
     get shotAim() {
@@ -391,7 +389,7 @@
       this._caught = this._result.fielding === 'caught' || Boolean(this._result.wicket && /caught/i.test(this._result.label || ''));
       this._bowled = Boolean(this._result.wicket && !this._caught);
       this._missed = this._shot.timing === null || this._result.quality === 0;
-      this._hitAt = Math.max(this._duration + 50, this._swingAt === Infinity ? 0 : this._swingAt + 35);
+      this._hitAt = Math.max(this._duration, this._swingAt === Infinity ? 0 : this._swingAt);
       this._flightDuration = this._bowled || this._missed ? 650 : Math.round(950 + clamp(this._result.distance || 0, 0, 1.4) * 400 + (this._result.elevation || 0) * 300);
       this._returnDuration = this._caught || this._bowled || this._missed || this._result.runs >= 4 ? 0 : 460;
       this._catchAt = this._hitAt + this._flightDuration;
@@ -498,7 +496,8 @@
 
     _incomingPosition(elapsed) {
       const release=this.deliveryPhase(this._releaseAt);
-      const p = clamp((elapsed - this._releaseAt) / (this._duration - this._releaseAt), 0, 1);
+      const arrival = this._shot && !this._missed ? this._hitAt : this._duration;
+      const p = clamp((elapsed - this._releaseAt) / (arrival - this._releaseAt), 0, 1);
       const type = this._sceneDelivery?.type || 'pace';
       const side = ((this._sceneDelivery?.seed || 1) & 1) ? 1 : -1;
       const contact=this._contactPoint(),bouncePoint={x:360+this._sceneDelivery.line*24,y:208+this._sceneDelivery.length*65};
